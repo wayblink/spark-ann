@@ -1,0 +1,28 @@
+# sbt
+target/
+project/target/
+project/project/
+
+# IDE
+.idea/
+.bsp/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs
+/tmp/
+*.log
+
+# Build artifacts
+*.jar
+*.class
+
+# Native build
+native/cpp/build/
+native/jni/*.so
+native/jni/*.dylib
+native/jni/*.dll
