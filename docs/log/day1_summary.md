@@ -20,7 +20,7 @@
 Created the multi-module sbt project structure:
 
 ```
-spark-ann-index/
+spark-ann/
 ├── build.sbt                 # Multi-module sbt configuration
 ├── project/build.properties  # sbt version (1.9.7)
 ├── .gitignore

@@ -21,7 +21,7 @@ brew install sbt
 ## Project Structure
 
 ```
-spark-ann-index/
+spark-ann/
 ├── build.sbt                    # Build configuration
 ├── core/                        # Core algorithms (no Spark dependency)
 │   └── src/main/scala/
@@ -64,6 +64,63 @@ sbt sparkIntegration/test
 sbt package
 ```
 
+## Benchmarks
+
+### SIFT Benchmarks
+
+The project includes benchmarks using SIFT datasets (128-dimensional vectors).
+
+#### Supported Datasets
+
+| Dataset | Base Vectors | Queries | Size | Use Case |
+|---------|-------------|---------|------|----------|
+| **SIFT10K** | 10K | 100 | ~5 MB | Fast dev testing (default) |
+| **SIFT1M** | 1M | 10K | ~500 MB | Full benchmark |
+
+#### Setup
+
+Place dataset files in `datasets/<variant>/`:
+```
+datasets/
+├── sift10k/
+│   ├── sift10k_base.fvecs
+│   ├── sift10k_query.fvecs
+│   └── sift10k_groundtruth.ivecs
+└── sift1m/
+    ├── sift_base.fvecs
+    ├── sift_query.fvecs
+    └── sift_groundtruth.ivecs
+```
+
+Dataset source: http://corpus-texmex.irisa.fr/
+
+#### Running Benchmarks
+
+```bash
+# Run with SIFT10K (default, fast)
+sbt "core/testOnly *SiftBenchmarkTest"
+
+# Run with SIFT1M (full benchmark)
+SIFT_DATASET=sift1m sbt "core/testOnly *SiftBenchmarkTest"
+
+# Run only dataset parser tests (no dataset required)
+sbt "core/testOnly *SiftDatasetTest"
+
+# Skip benchmarks (e.g., in CI)
+SKIP_BENCHMARK=true sbt "core/test"
+```
+
+#### Benchmark Tests
+
+| Test | Description | Target |
+|------|-------------|--------|
+| recall@1 | Top-1 accuracy with ef=200 | >= 95% |
+| recall@10 | Top-10 accuracy with ef=50 | >= 90% |
+| recall@100 | Top-100 accuracy with ef=200 | >= 85% |
+| query latency | Average query time | < 1ms (1M) / < 0.5ms (10K) |
+| build throughput | Index construction speed | >= 5K vectors/sec |
+| recall vs ef | Tradeoff analysis | - |
+
 ## Quick Start
 
 ```scala
@@ -103,7 +160,7 @@ val vectors = SparkTestData.generateAndSave(
 
 ### Phase 1: Core Library (Week 1-4)
 - [x] Day 1: Project structure and test data generators
-- [ ] Day 2-3: HNSW algorithm wrapper
+- [x] Day 2-3: HNSW algorithm wrapper (HNSWLibIndex with hnswlib-core)
 - [ ] Day 4-5: Spark Local Index builder
 - [ ] Day 6: Boundary node selection
 - [ ] Day 7-8: DataFrame API

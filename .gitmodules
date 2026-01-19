@@ -1,0 +1,3 @@
+[submodule "datasets/sift1m"]
+	path = datasets/sift1m
+	url = https://huggingface.co/datasets/qbo-odp/sift1m
