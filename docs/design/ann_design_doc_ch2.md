@@ -101,8 +101,8 @@ case class Neighbor(
 ### 2.2.3 本地索引层
 
 **职责**
-- 为每个数据文件维护独立的HNSW索引
-- 执行文件内的向量搜索
+- 为一个或多个数据文件维护独立的HNSW索引
+- 执行文件组内的向量搜索
 - 提供向量数据访问接口
 
 **数据结构**
@@ -113,41 +113,63 @@ trait LocalIndex {
     k: Int,
     efSearch: Int
   ): Array[LocalSearchResult]
-  
+
   def getVector(vectorId: Long): Array[Float]
-  
+
   def getVectors(vectorIds: Array[Long]): Array[Array[Float]]
+
+  // 获取该索引覆盖的数据文件列表
+  def getDataFiles(): Array[String]
 }
 
 case class LocalSearchResult(
   vectorId: Long,
   distance: Float,
-  vector: Option[Array[Float]] = None
+  vector: Option[Array[Float]] = None,
+  sourceFile: String  // 来源数据文件
 )
 ```
 
-**索引文件组织**
+**索引文件组织（基于文件）**
+
+每个Local Index可以覆盖一个或多个数据文件：
 ```
-data_file: s3://bucket/data/part-00001.parquet
-index_file: s3://bucket/indices/part-00001.hnsw
-vector_cache: s3://bucket/indices/part-00001.vectors (可选)
+# 单文件模式 - 一个数据文件对应一个索引
+data_file: s3://bucket/data/file_001.parquet
+index_file: s3://bucket/indices/local/v1/file_001.hnsw
+
+# 多文件模式 - 多个小文件合并为一个索引（减少索引碎片）
+data_files: [s3://bucket/data/file_001.parquet,
+             s3://bucket/data/file_002.parquet,
+             s3://bucket/data/file_003.parquet]
+index_file: s3://bucket/indices/local/v1/group_001.hnsw
 ```
+
+**文件分组策略**
+- 默认：每个数据文件一个索引（1:1映射）
+- 可选：按文件大小分组，将小文件合并到同一索引（减少索引数量）
+- 阈值建议：单个索引覆盖的向量数控制在10万~100万之间
 
 ## 2.3 数据流图
 
 ### 2.3.1 索引构建流程
 
 ```
-原始数据文件
+原始数据文件列表
     ↓
 ┌─────────────────────┐
-│ 读取向量数据         │
-│ (Spark并行读取)      │
+│ 扫描数据文件         │
+│ (列出所有数据文件)    │
+└─────────────────────┘
+    ↓
+┌─────────────────────┐
+│ 文件分组策略         │
+│ (单文件/多文件合并)   │
 └─────────────────────┘
     ↓
 ┌─────────────────────┐
 │ 构建Local HNSW      │
-│ (每个分区独立)       │
+│ (每个文件组独立并行)  │
 └─────────────────────┘
     ↓
 ┌─────────────────────┐
@@ -167,7 +189,7 @@ vector_cache: s3://bucket/indices/part-00001.vectors (可选)
     ↓
 ┌─────────────────────┐
 │ 生成元数据          │
-│ (index_metadata.json)│
+│ (记录文件路径列表)    │
 └─────────────────────┘
 ```
 
@@ -211,13 +233,16 @@ vector_cache: s3://bucket/indices/part-00001.vectors (可选)
 ```
 table_root/
 ├── data/                          # 原始数据文件
-│   ├── part-00000.parquet
-│   ├── part-00001.parquet
-│   └── ...
+│   ├── year=2025/month=01/        # 可能的分区目录
+│   │   ├── file_001.parquet
+│   │   ├── file_002.parquet
+│   │   └── ...
+│   └── year=2025/month=02/
+│       └── ...
 │
 ├── indices/                       # 索引文件目录
 │   ├── metadata/                  # 索引元数据
-│   │   ├── index_v1.json         # 索引版本1
+│   │   ├── index_v1.json         # 索引版本1（包含文件路径列表）
 │   │   └── index_v2.json         # 索引版本2
 │   │
 │   ├── global/                    # 全局索引
@@ -228,10 +253,11 @@ table_root/
 │   │   └── v2/
 │   │       └── ...
 │   │
-│   └── local/                     # 本地索引
+│   └── local/                     # 本地索引（基于文件）
 │       ├── v1/
-│       │   ├── part-00000.hnsw
-│       │   ├── part-00001.hnsw
+│       │   ├── file_001.hnsw      # 单文件索引
+│       │   ├── file_002.hnsw
+│       │   ├── group_001.hnsw     # 多文件合并索引
 │       │   └── ...
 │       └── v2/
 │           └── ...
@@ -239,6 +265,11 @@ table_root/
 └── metadata/                      # Iceberg元数据（未来）
     └── ...
 ```
+
+**索引与数据文件的映射关系**
+- 每个Local Index在元数据中记录其覆盖的数据文件路径列表
+- 支持1:1映射（一个数据文件一个索引）和N:1映射（多个数据文件一个索引）
+- 索引文件名可以基于数据文件名或自定义的组ID
 
 ### 2.4.2 存储容量估算
 

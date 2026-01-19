@@ -5,7 +5,8 @@
 ```
 Phase 1: Core Library (Week 1-4)
   ├── 核心HNSW算法
-  ├── 两层索引架构
+  ├── 文件发现与分组策略
+  ├── 基于文件的两层索引架构
   └── DataFrame API集成
 
 Phase 2: SQL Extension (Week 5-8)
@@ -573,9 +574,143 @@ class HNSWIndexTest extends AnyFunSuite {
 
 ---
 
-#### Step 2.2: Spark集成 - Local Index构建 (Day 4-5)
+#### Step 2.2: 文件发现与分组 (Day 4)
 
-**目标**: 在Spark中并行构建Local索引
+**目标**: 扫描数据文件并根据策略分组
+
+**实现** (spark-integration模块):
+```scala
+// spark-integration/src/main/scala/builder/FileDiscovery.scala
+package com.company.ann.spark.builder
+
+import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.spark.sql.SparkSession
+
+/**
+ * 扫描数据目录，发现所有数据文件
+ */
+object FileDiscovery {
+
+  def discoverDataFiles(
+    spark: SparkSession,
+    dataPath: String,
+    vectorColumn: String
+  ): Array[DataFileInfo] = {
+
+    val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
+    val basePath = new Path(dataPath)
+
+    // 递归查找所有Parquet文件
+    val parquetFiles = listParquetFiles(fs, basePath)
+
+    // 获取每个文件的向量数量
+    parquetFiles.par.map { filePath =>
+      val df = spark.read.parquet(filePath.toString)
+      val numVectors = df.count()
+      DataFileInfo(
+        filePath = filePath.toString,
+        numVectors = numVectors
+      )
+    }.toArray
+  }
+
+  private def listParquetFiles(fs: FileSystem, path: Path): Array[Path] = {
+    fs.listStatus(path).flatMap { status =>
+      if (status.isDirectory) {
+        listParquetFiles(fs, status.getPath)
+      } else if (status.getPath.getName.endsWith(".parquet")) {
+        Array(status.getPath)
+      } else {
+        Array.empty[Path]
+      }
+    }
+  }
+}
+
+case class DataFileInfo(
+  filePath: String,
+  numVectors: Long
+)
+
+/**
+ * 文件分组策略
+ */
+object FileGroupingStrategy {
+
+  sealed trait GroupingStrategy
+  case object SingleFile extends GroupingStrategy    // 每个文件单独索引
+  case object MergeSmall extends GroupingStrategy    // 合并小文件
+
+  def groupFiles(
+    files: Array[DataFileInfo],
+    strategy: GroupingStrategy,
+    targetVectorsPerIndex: Long = 500000
+  ): Array[FileGroup] = {
+
+    strategy match {
+      case SingleFile =>
+        files.map { file =>
+          val fileName = new Path(file.filePath).getName.stripSuffix(".parquet")
+          FileGroup(
+            indexId = s"idx_$fileName",
+            files = Array(file),
+            totalVectors = file.numVectors
+          )
+        }
+
+      case MergeSmall =>
+        mergeSmallFiles(files, targetVectorsPerIndex)
+    }
+  }
+
+  private def mergeSmallFiles(
+    files: Array[DataFileInfo],
+    targetVectors: Long
+  ): Array[FileGroup] = {
+    val groups = scala.collection.mutable.ArrayBuffer.empty[FileGroup]
+    var currentGroup = scala.collection.mutable.ArrayBuffer.empty[DataFileInfo]
+    var currentCount = 0L
+    var groupIndex = 0
+
+    files.sortBy(_.numVectors).foreach { file =>
+      if (currentCount + file.numVectors > targetVectors && currentGroup.nonEmpty) {
+        groups += FileGroup(
+          indexId = f"idx_group_$groupIndex%05d",
+          files = currentGroup.toArray,
+          totalVectors = currentCount
+        )
+        currentGroup.clear()
+        currentCount = 0
+        groupIndex += 1
+      }
+      currentGroup += file
+      currentCount += file.numVectors
+    }
+
+    if (currentGroup.nonEmpty) {
+      groups += FileGroup(
+        indexId = f"idx_group_$groupIndex%05d",
+        files = currentGroup.toArray,
+        totalVectors = currentCount
+      )
+    }
+
+    groups.toArray
+  }
+}
+
+case class FileGroup(
+  indexId: String,
+  files: Array[DataFileInfo],
+  totalVectors: Long
+)
+```
+
+---
+
+#### Step 2.3: Spark集成 - Local Index构建 (Day 5)
+
+**目标**: 基于文件组并行构建Local索引
 
 **实现** (spark-integration模块):
 ```scala
@@ -583,91 +718,116 @@ class HNSWIndexTest extends AnyFunSuite {
 package com.company.ann.spark.builder
 
 import com.company.ann.core.index.{HNSWLibIndex, HNSWConfig}
-import org.apache.spark.TaskContext
 import org.apache.spark.sql.{DataFrame, SparkSession}
 
 object LocalIndexBuilder {
-  
+
   /**
-   * 为DataFrame的每个分区构建Local HNSW索引
+   * 基于文件组构建Local HNSW索引
    */
-  def buildFromDataFrame(
-    df: DataFrame,
+  def buildFromFileGroups(
+    spark: SparkSession,
+    fileGroups: Array[FileGroup],
     vectorColumn: String,
     indexOutputPath: String,
     config: HNSWConfig = HNSWConfig()
   ): Array[LocalIndexMetadata] = {
-    
-    import df.sparkSession.implicits._
-    
-    // 获取向量维度
-    val firstRow = df.first()
+
+    val sc = spark.sparkContext
+
+    // 获取向量维度（从第一个文件）
+    val firstFile = fileGroups.head.files.head.filePath
+    val firstRow = spark.read.parquet(firstFile).first()
     val dimension = firstRow.getAs[Seq[Float]](vectorColumn).length
-    
-    println(s"Building local indices with dimension=$dimension")
-    
-    val metadata = df.select($"id", col(vectorColumn).as("vector"))
-      .rdd
-      .mapPartitionsWithIndex { (partitionId, rows) =>
-        buildIndexForPartition(
-          partitionId,
-          rows,
-          dimension,
-          indexOutputPath,
-          config
-        )
-      }
-      .collect()
-    
+
+    println(s"Building local indices with dimension=$dimension for ${fileGroups.length} file groups")
+
+    // 并行为每个文件组构建索引
+    val fileGroupsRDD = sc.parallelize(fileGroups)
+
+    val metadata = fileGroupsRDD.map { group =>
+      buildIndexForFileGroup(
+        spark,
+        group,
+        vectorColumn,
+        dimension,
+        indexOutputPath,
+        config
+      )
+    }.collect()
+
     println(s"Built ${metadata.length} local indices")
     metadata
   }
-  
-  private def buildIndexForPartition(
-    partitionId: Int,
-    rows: Iterator[org.apache.spark.sql.Row],
+
+  private def buildIndexForFileGroup(
+    spark: SparkSession,
+    group: FileGroup,
+    vectorColumn: String,
     dimension: Int,
     outputPath: String,
     config: HNSWConfig
-  ): Iterator[LocalIndexMetadata] = {
-    
-    val vectors = rows.map { row =>
-      val id = row.getLong(0)
-      val vector = row.getSeq[Float](1).toArray
-      (id, vector)
-    }.toArray
-    
-    if (vectors.isEmpty) {
-      println(s"[Partition $partitionId] Empty partition, skipping")
-      return Iterator.empty
+  ): LocalIndexMetadata = {
+
+    var vectorOffset = 0L
+    val allVectors = scala.collection.mutable.ArrayBuffer.empty[(Long, Array[Float])]
+    val fileEntries = scala.collection.mutable.ArrayBuffer.empty[DataFileEntry]
+
+    // 读取该组所有文件的向量
+    group.files.foreach { fileInfo =>
+      val df = spark.read.parquet(fileInfo.filePath)
+      val vectors = df.select(vectorColumn).collect().map { row =>
+        row.getAs[Seq[Float]](0).toArray
+      }
+
+      vectors.zipWithIndex.foreach { case (vec, localIdx) =>
+        val globalIdx = vectorOffset + localIdx
+        allVectors += ((globalIdx, vec))
+      }
+
+      fileEntries += DataFileEntry(
+        filePath = fileInfo.filePath,
+        numVectors = vectors.length,
+        vectorOffset = vectorOffset
+      )
+
+      vectorOffset += vectors.length
     }
-    
-    println(s"[Partition $partitionId] Building index for ${vectors.length} vectors")
-    
+
+    println(s"[${group.indexId}] Building index for ${allVectors.length} vectors from ${group.files.length} files")
+
     // 构建HNSW索引
-    val index = HNSWLibIndex(dimension, config.copy(maxElements = vectors.length * 2))
-    index.addAll(vectors)
-    
+    val index = HNSWLibIndex(dimension, config.copy(maxElements = allVectors.length * 2))
+    index.addAll(allVectors)
+
     // 保存索引
-    val indexPath = s"$outputPath/local/partition_${partitionId}.hnsw"
+    val indexPath = s"$outputPath/local/${group.indexId}.hnsw"
     new java.io.File(indexPath).getParentFile.mkdirs()
     index.save(indexPath)
-    
-    println(s"[Partition $partitionId] Index saved to $indexPath")
-    
-    Iterator(LocalIndexMetadata(
-      partitionId = partitionId,
+
+    println(s"[${group.indexId}] Index saved to $indexPath")
+
+    LocalIndexMetadata(
+      indexId = group.indexId,
+      dataFiles = fileEntries.toArray,
       indexPath = indexPath,
-      numVectors = vectors.length,
+      totalVectors = allVectors.length,
       dimension = dimension
-    ))
+    )
   }
 }
 
+case class DataFileEntry(
+  filePath: String,
+  numVectors: Long,
+  vectorOffset: Long
+)
+
 case class LocalIndexMetadata(
-  partitionId: Int,
+  indexId: String,
+  dataFiles: Array[DataFileEntry],
   indexPath: String,
-  numVectors: Int,
+  totalVectors: Long,
   dimension: Int
 )
 ```
@@ -676,104 +836,133 @@ case class LocalIndexMetadata(
 ```scala
 // spark-integration/src/test/scala/builder/LocalIndexBuilderTest.scala
 class LocalIndexBuilderTest extends AnyFunSuite with BeforeAndAfterAll {
-  
+
   var spark: SparkSession = _
-  
+
   override def beforeAll(): Unit = {
     spark = SparkSession.builder()
       .master("local[4]")
       .appName("LocalIndexBuilderTest")
       .getOrCreate()
   }
-  
-  test("Build indices for single partition") {
-    val df = SparkTestData.generateAndSave(
+
+  test("Build index for single file") {
+    // 生成测试数据到单个文件
+    val vectors = TestDataGenerator.generateRandomVectors(1000, 128)
+    import spark.implicits._
+    val df = vectors.toSeq.toDF("id", "vector")
+    df.write.mode("overwrite").parquet("/tmp/test_single_file/file_001.parquet")
+
+    // 发现文件
+    val files = FileDiscovery.discoverDataFiles(spark, "/tmp/test_single_file", "vector")
+    assert(files.length == 1)
+
+    // 分组（单文件模式）
+    val groups = FileGroupingStrategy.groupFiles(files, SingleFile)
+    assert(groups.length == 1)
+
+    // 构建索引
+    val metadata = LocalIndexBuilder.buildFromFileGroups(
       spark,
-      numVectors = 1000,
-      dimension = 128,
-      path = "/tmp/test_single_partition",
-      dataType = "random"
-    ).repartition(1)
-    
-    val metadata = LocalIndexBuilder.buildFromDataFrame(
-      df,
+      groups,
       vectorColumn = "vector",
       indexOutputPath = "/tmp/test_index_single"
     )
-    
+
     assert(metadata.length == 1)
-    assert(metadata.head.numVectors == 1000)
+    assert(metadata.head.totalVectors == 1000)
+    assert(metadata.head.dataFiles.length == 1)
     assert(new java.io.File(metadata.head.indexPath).exists())
   }
-  
-  test("Build indices for multiple partitions") {
-    val df = SparkTestData.generateAndSave(
+
+  test("Build index for multiple files with SingleFile strategy") {
+    // 生成多个数据文件
+    val vectors1 = TestDataGenerator.generateRandomVectors(500, 64)
+    val vectors2 = TestDataGenerator.generateRandomVectors(600, 64)
+    val vectors3 = TestDataGenerator.generateRandomVectors(400, 64)
+
+    import spark.implicits._
+    vectors1.toSeq.toDF("id", "vector").write.mode("overwrite").parquet("/tmp/test_multi_file/file_001.parquet")
+    vectors2.toSeq.toDF("id", "vector").write.mode("overwrite").parquet("/tmp/test_multi_file/file_002.parquet")
+    vectors3.toSeq.toDF("id", "vector").write.mode("overwrite").parquet("/tmp/test_multi_file/file_003.parquet")
+
+    // 发现文件
+    val files = FileDiscovery.discoverDataFiles(spark, "/tmp/test_multi_file", "vector")
+    assert(files.length == 3)
+
+    // 单文件策略：每个文件一个索引
+    val groups = FileGroupingStrategy.groupFiles(files, SingleFile)
+    assert(groups.length == 3)
+
+    // 构建索引
+    val metadata = LocalIndexBuilder.buildFromFileGroups(
       spark,
-      numVectors = 5000,
-      dimension = 64,
-      path = "/tmp/test_multi_partition",
-      dataType = "clustered"
-    ).repartition(5)
-    
-    val metadata = LocalIndexBuilder.buildFromDataFrame(
-      df,
+      groups,
       vectorColumn = "vector",
       indexOutputPath = "/tmp/test_index_multi"
     )
-    
-    assert(metadata.length == 5)
-    assert(metadata.map(_.numVectors).sum == 5000)
-    
-    // 验证所有索引文件存在
+
+    assert(metadata.length == 3)
+    assert(metadata.map(_.totalVectors).sum == 1500)
+
+    // 验证每个索引只包含一个文件
     metadata.foreach { meta =>
-      val file = new java.io.File(meta.indexPath)
-      assert(file.exists(), s"Index file ${meta.indexPath} should exist")
-      assert(file.length() > 0, "Index file should not be empty")
+      assert(meta.dataFiles.length == 1)
+      assert(new java.io.File(meta.indexPath).exists())
     }
   }
-  
+
+  test("Build index for multiple files with MergeSmall strategy") {
+    // 使用上面创建的多个数据文件
+    val files = FileDiscovery.discoverDataFiles(spark, "/tmp/test_multi_file", "vector")
+
+    // 合并策略：目标每个索引800个向量
+    val groups = FileGroupingStrategy.groupFiles(files, MergeSmall, targetVectorsPerIndex = 800)
+
+    // 应该合并成较少的组
+    assert(groups.length < files.length)
+    assert(groups.map(_.totalVectors).sum == 1500)
+
+    // 构建索引
+    val metadata = LocalIndexBuilder.buildFromFileGroups(
+      spark,
+      groups,
+      vectorColumn = "vector",
+      indexOutputPath = "/tmp/test_index_merged"
+    )
+
+    // 验证合并后的索引包含多个文件
+    val mergedIndex = metadata.find(_.dataFiles.length > 1)
+    assert(mergedIndex.isDefined, "Should have at least one merged index")
+  }
+
   test("Query built local index") {
     val vectors = TestDataGenerator.generateClusteredVectors(5, 200, 128)
     import spark.implicits._
-    val df = vectors.toSeq.toDF("id", "vector").repartition(1)
-    
-    val metadata = LocalIndexBuilder.buildFromDataFrame(
-      df,
+    val df = vectors.toSeq.toDF("id", "vector")
+    df.write.mode("overwrite").parquet("/tmp/test_query_file/file_001.parquet")
+
+    val files = FileDiscovery.discoverDataFiles(spark, "/tmp/test_query_file", "vector")
+    val groups = FileGroupingStrategy.groupFiles(files, SingleFile)
+
+    val metadata = LocalIndexBuilder.buildFromFileGroups(
+      spark,
+      groups,
       vectorColumn = "vector",
       indexOutputPath = "/tmp/test_query_local"
     ).head
-    
+
     // 加载索引并查询
     val index = HNSWLibIndex(128)
     index.load(metadata.indexPath)
-    
+
     val query = vectors.head._2
     val results = index.search(query, k = 10)
-    
+
     assert(results.nonEmpty)
     assert(results.head.id == vectors.head._1)
   }
-  
-  test("Handle empty partitions gracefully") {
-    val df = SparkTestData.generateAndSave(
-      spark,
-      numVectors = 100,
-      dimension = 64,
-      path = "/tmp/test_empty_partitions",
-      dataType = "random"
-    ).repartition(20)  // 很多空分区
-    
-    val metadata = LocalIndexBuilder.buildFromDataFrame(
-      df,
-      vectorColumn = "vector",
-      indexOutputPath = "/tmp/test_index_empty"
-    )
-    
-    assert(metadata.length < 20, "Should skip empty partitions")
-    assert(metadata.length > 0, "Should have some non-empty partitions")
-    assert(metadata.map(_.numVectors).sum == 100)
-  }
-  
+
   override def afterAll(): Unit = {
     spark.stop()
   }
@@ -781,9 +970,9 @@ class LocalIndexBuilderTest extends AnyFunSuite with BeforeAndAfterAll {
 ```
 
 **产出**:
-- ✅ Spark并行Local Index构建
-- ✅ 支持多分区
-- ✅ 空分区处理
+- ✅ 文件发现与分组策略
+- ✅ Spark并行Local Index构建（基于文件组）
+- ✅ 支持单文件和合并模式
 
 ---
 
@@ -846,65 +1035,70 @@ case class BoundaryNode(
 package com.company.ann.spark.builder
 
 import com.company.ann.core.index.{BoundaryNode, BoundaryNodeSelector}
-import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.SparkSession
 
 object BoundaryNodesCollector {
-  
+
   /**
-   * 从每个分区收集boundary nodes
+   * 从每个Local Index收集boundary nodes
+   * @param localIndices 本地索引元数据列表
+   * @param nodesPerIndex 每个索引选择的boundary节点数
    */
-  def collectFromDataFrame(
-    df: DataFrame,
+  def collectFromLocalIndices(
+    spark: SparkSession,
+    localIndices: Array[LocalIndexMetadata],
     vectorColumn: String,
-    nodesPerPartition: Int
+    nodesPerIndex: Int
   ): Array[GlobalBoundaryNode] = {
-    
-    import df.sparkSession.implicits._
-    
-    val boundaryNodes = df.select($"id", col(vectorColumn).as("vector"))
-      .rdd
-      .mapPartitionsWithIndex { (partitionId, rows) =>
-        val vectors = rows.map { row =>
-          (row.getLong(0), row.getSeq[Float](1).toArray)
-        }.toArray
-        
-        if (vectors.isEmpty) {
-          Iterator.empty
-        } else {
-          val selected = BoundaryNodeSelector.selectBoundaryNodes(
-            vectors,
-            nodesPerPartition,
-            strategy = "distributed"
-          )
-          
-          selected.map { node =>
-            GlobalBoundaryNode(
-              globalId = s"part_$partitionId:${node.localId}",
-              partitionId = partitionId,
-              localId = node.localId,
-              vector = node.vector
-            )
-          }.iterator
+
+    val sc = spark.sparkContext
+
+    val boundaryNodes = sc.parallelize(localIndices).flatMap { meta =>
+      // 读取该索引覆盖的所有文件的向量
+      val allVectors = meta.dataFiles.flatMap { fileEntry =>
+        val df = spark.read.parquet(fileEntry.filePath)
+        df.select(vectorColumn).collect().zipWithIndex.map { case (row, localIdx) =>
+          val globalIdx = fileEntry.vectorOffset + localIdx
+          (globalIdx, row.getAs[Seq[Float]](0).toArray)
         }
       }
-      .collect()
-    
-    println(s"Collected ${boundaryNodes.length} boundary nodes from ${df.rdd.getNumPartitions} partitions")
+
+      // 选择boundary nodes
+      val selected = BoundaryNodeSelector.selectBoundaryNodes(
+        allVectors,
+        nodesPerIndex,
+        strategy = "distributed"
+      )
+
+      selected.map { node =>
+        GlobalBoundaryNode(
+          globalId = s"${meta.indexId}:${node.localId}",
+          indexId = meta.indexId,
+          localId = node.localId,
+          vector = node.vector,
+          sourceFiles = meta.dataFiles.map(_.filePath)
+        )
+      }
+    }.collect()
+
+    println(s"Collected ${boundaryNodes.length} boundary nodes from ${localIndices.length} local indices")
     boundaryNodes
   }
 }
 
 case class GlobalBoundaryNode(
-  globalId: String,
-  partitionId: Int,
-  localId: Long,
-  vector: Array[Float]
+  globalId: String,       // 格式: "indexId:localVectorId"
+  indexId: String,        // 所属Local Index的ID
+  localId: Long,          // 在Local Index中的向量ID
+  vector: Array[Float],
+  sourceFiles: Array[String]  // 来源数据文件列表
 )
 ```
 
 **产出**:
 - ✅ Boundary nodes选择算法
-- ✅ 跨分区收集
+- ✅ 基于索引ID的跨索引收集
+- ✅ 记录来源文件信息
 
 ---
 
@@ -984,8 +1178,9 @@ object ANNIndexAPI {
 case class ANNIndexConfig(
   M: Int = 16,
   efConstruction: Int = 200,
-  numPartitions: Option[Int] = None,  // None表示使用DataFrame现有分区
-  boundaryNodesPerPartition: Int = 50
+  groupingStrategy: GroupingStrategy = SingleFile,  // 文件分组策略
+  targetVectorsPerIndex: Long = 500000,             // 用于MergeSmall策略
+  boundaryNodesPerIndex: Int = 50                   // 每个索引的boundary节点数
 )
 ```
 
@@ -993,48 +1188,78 @@ case class ANNIndexConfig(
 ```scala
 // spark-integration/src/main/scala/examples/QuickStart.scala
 object QuickStart {
-  
+
   def main(args: Array[String]): Unit = {
     val spark = SparkSession.builder()
       .appName("ANN Quick Start")
       .master("local[4]")
       .getOrCreate()
-    
+
     import com.company.ann.spark.api._
-    
-    // 1. 生成测试数据
-    val vectors = SparkTestData.generateAndSave(
-      spark,
-      numVectors = 10000,
-      dimension = 128,
-      path = "/tmp/vectors",
-      dataType = "clustered"
+    import com.company.ann.spark.builder._
+
+    // 1. 生成测试数据（模拟多个数据文件）
+    println("Generating test data files...")
+    val testDataPath = "/tmp/vectors"
+    for (i <- 1 to 5) {
+      val vectors = TestDataGenerator.generateClusteredVectors(
+        numClusters = 10,
+        vectorsPerCluster = 200,
+        dimension = 128
+      )
+      import spark.implicits._
+      vectors.toSeq.toDF("id", "vector")
+        .write.mode("overwrite")
+        .parquet(s"$testDataPath/file_$i.parquet")
+    }
+    println(s"Generated 5 data files with 2000 vectors each")
+
+    // 2. 发现数据文件
+    println("\nDiscovering data files...")
+    val dataFiles = FileDiscovery.discoverDataFiles(spark, testDataPath, "vector")
+    println(s"Found ${dataFiles.length} data files")
+
+    // 3. 选择分组策略并分组
+    println("\nGrouping files...")
+    val fileGroups = FileGroupingStrategy.groupFiles(
+      dataFiles,
+      strategy = SingleFile  // 每个文件一个索引
+      // 或使用 MergeSmall 合并小文件
     )
-    
-    // 2. 构建索引
-    println("Building ANN index...")
+    println(s"Created ${fileGroups.length} file groups")
+
+    // 4. 构建索引
+    println("\nBuilding ANN index...")
     val metadata = ANNIndexAPI.buildIndex(
-      df = vectors,
+      spark = spark,
+      fileGroups = fileGroups,
       vectorColumn = "vector",
       outputPath = "/tmp/ann_index",
-      config = ANNIndexConfig(M = 16, efConstruction = 200)
+      config = ANNIndexConfig(
+        M = 16,
+        efConstruction = 200,
+        boundaryNodesPerIndex = 50
+      )
     )
-    
+
     println(s"Index built: ${metadata.statistics.totalVectors} vectors indexed")
-    
-    // 3. 查询
+    println(s"Number of local indices: ${metadata.localIndices.length}")
+    println(s"Number of data files covered: ${metadata.localIndices.flatMap(_.dataFiles).length}")
+
+    // 5. 查询
     println("\nQuerying index...")
     val queryVector = Array.fill(128)(scala.util.Random.nextFloat())
-    
-    val results = vectors.annSearch(
+
+    val df = spark.read.parquet(testDataPath)
+    val results = df.annSearch(
       indexPath = "/tmp/ann_index",
       queryVector = queryVector,
       k = 10,
       nprobe = 3
     )
-    
+
     results.show()
-    
+
     spark.stop()
   }
 }

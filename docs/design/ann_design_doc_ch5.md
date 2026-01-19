@@ -2,11 +2,16 @@
 
 ## 5.1 构建流程概览
 
-索引构建分为三个主要阶段：
+索引构建分为四个主要阶段：
 
 ```
+Phase 0: File Discovery & Grouping (串行)
+  ├── 扫描数据目录，列出所有数据文件
+  ├── 获取每个文件的向量数量
+  └── 根据分组策略决定文件分组
+
 Phase 1: Local Index Construction (并行)
-  ├── 读取数据文件
+  ├── 按文件组读取向量数据
   ├── 构建Local HNSW
   ├── 持久化索引文件
   └── 选择Boundary Nodes
@@ -18,89 +23,270 @@ Phase 2: Global Index Construction (串行)
   └── 持久化Global Index
 
 Phase 3: Metadata Generation (串行)
-  ├── 生成索引元数据
+  ├── 生成索引元数据（包含文件路径列表）
   ├── 验证完整性
   └── 发布索引版本
 ```
 
-## 5.2 Phase 1: 本地索引构建
+## 5.2 Phase 0: 文件发现与分组
 
-### 5.2.1 Spark作业设计
+### 5.2.1 文件发现
+
+```scala
+object FileDiscovery {
+
+  /**
+   * 扫描数据目录，列出所有数据文件及其向量数量
+   */
+  def discoverDataFiles(
+    spark: SparkSession,
+    dataPath: String,
+    vectorColumn: String
+  ): Array[DataFileInfo] = {
+
+    val fs = FileSystem.get(spark.sparkContext.hadoopConfiguration)
+    val basePath = new Path(dataPath)
+
+    // 递归查找所有Parquet文件
+    val parquetFiles = listParquetFiles(fs, basePath)
+
+    // 获取每个文件的向量数量（可并行执行）
+    parquetFiles.par.map { filePath =>
+      val df = spark.read.parquet(filePath.toString)
+      val numVectors = df.count()
+      DataFileInfo(
+        filePath = filePath.toString,
+        numVectors = numVectors
+      )
+    }.toArray
+  }
+
+  private def listParquetFiles(fs: FileSystem, path: Path): Array[Path] = {
+    fs.listStatus(path).flatMap { status =>
+      if (status.isDirectory) {
+        listParquetFiles(fs, status.getPath)
+      } else if (status.getPath.getName.endsWith(".parquet")) {
+        Array(status.getPath)
+      } else {
+        Array.empty[Path]
+      }
+    }
+  }
+}
+
+case class DataFileInfo(
+  filePath: String,
+  numVectors: Long
+)
+```
+
+### 5.2.2 文件分组策略
+
+```scala
+object FileGroupingStrategy {
+
+  /**
+   * 文件分组策略
+   * @param files 数据文件列表
+   * @param strategy 分组策略：SingleFile（每个文件一个索引）或 MergeSmall（合并小文件）
+   * @param targetVectorsPerIndex 目标每个索引的向量数（用于MergeSmall策略）
+   */
+  def groupFiles(
+    files: Array[DataFileInfo],
+    strategy: GroupingStrategy,
+    targetVectorsPerIndex: Long = 500000
+  ): Array[FileGroup] = {
+
+    strategy match {
+      case SingleFile =>
+        // 每个文件单独一个索引
+        files.zipWithIndex.map { case (file, idx) =>
+          FileGroup(
+            groupId = s"idx_${extractFileName(file.filePath)}",
+            files = Array(file),
+            totalVectors = file.numVectors
+          )
+        }
+
+      case MergeSmall =>
+        // 合并小文件到同一个索引
+        mergeSmallFiles(files, targetVectorsPerIndex)
+    }
+  }
+
+  private def mergeSmallFiles(
+    files: Array[DataFileInfo],
+    targetVectors: Long
+  ): Array[FileGroup] = {
+
+    val groups = mutable.ArrayBuffer.empty[FileGroup]
+    var currentGroup = mutable.ArrayBuffer.empty[DataFileInfo]
+    var currentCount = 0L
+    var groupIndex = 0
+
+    files.sortBy(_.numVectors).foreach { file =>
+      if (currentCount + file.numVectors > targetVectors && currentGroup.nonEmpty) {
+        // 当前组已满，创建新组
+        groups += FileGroup(
+          groupId = f"idx_group_$groupIndex%05d",
+          files = currentGroup.toArray,
+          totalVectors = currentCount
+        )
+        currentGroup.clear()
+        currentCount = 0
+        groupIndex += 1
+      }
+      currentGroup += file
+      currentCount += file.numVectors
+    }
+
+    // 处理最后一组
+    if (currentGroup.nonEmpty) {
+      groups += FileGroup(
+        groupId = f"idx_group_$groupIndex%05d",
+        files = currentGroup.toArray,
+        totalVectors = currentCount
+      )
+    }
+
+    groups.toArray
+  }
+
+  private def extractFileName(path: String): String = {
+    new Path(path).getName.stripSuffix(".parquet")
+  }
+}
+
+sealed trait GroupingStrategy
+case object SingleFile extends GroupingStrategy    // 每个文件单独索引
+case object MergeSmall extends GroupingStrategy    // 合并小文件
+
+case class FileGroup(
+  groupId: String,
+  files: Array[DataFileInfo],
+  totalVectors: Long
+)
+```
+
+## 5.3 Phase 1: 本地索引构建
+
+### 5.3.1 Spark作业设计（基于文件）
 
 ```scala
 object LocalIndexBuilder {
-  
+
+  /**
+   * 基于文件组构建本地索引
+   */
   def buildLocalIndices(
     spark: SparkSession,
-    dataPath: String,
+    fileGroups: Array[FileGroup],
     vectorColumn: String,
     outputPath: String,
     indexConfig: HNSWConfig
   ): Dataset[LocalIndexMetadata] = {
-    
+
     import spark.implicits._
-    
-    // Step 1: 读取数据
-    val vectorData = spark.read.parquet(dataPath)
-      .select($"${vectorColumn}", monotonically_increasing_id().as("row_id"))
-    
-    // Step 2: 为每个分区构建索引
-    val localIndices = vectorData
-      .repartition(indexConfig.numPartitions)  // 控制分区数
-      .mapPartitions { partition =>
-        buildIndexForPartition(partition, indexConfig)
-      }
-    
-    localIndices.cache()
-    localIndices
-  }
-  
-  def buildIndexForPartition(
-    partition: Iterator[Row],
-    config: HNSWConfig
-  ): Iterator[LocalIndexMetadata] = {
-    
-    val partitionId = TaskContext.getPartitionId()
-    val fileId = f"file_$partitionId%05d"
-    
-    // 收集分区内的所有向量
-    val vectors = partition.map { row =>
-      val vectorArray = row.getAs[mutable.WrappedArray[Float]](0).toArray
-      val rowId = row.getLong(1)
-      (rowId, vectorArray)
-    }.toArray
-    
-    if (vectors.isEmpty) {
-      return Iterator.empty
+
+    val sc = spark.sparkContext
+    val fileGroupsRDD = sc.parallelize(fileGroups)
+
+    // 为每个文件组构建索引
+    val localIndices = fileGroupsRDD.map { group =>
+      buildIndexForFileGroup(spark, group, vectorColumn, outputPath, indexConfig)
     }
-    
+
+    spark.createDataset(localIndices.collect())
+  }
+
+  /**
+   * 为一个文件组构建索引
+   */
+  def buildIndexForFileGroup(
+    spark: SparkSession,
+    group: FileGroup,
+    vectorColumn: String,
+    outputPath: String,
+    config: HNSWConfig
+  ): LocalIndexMetadata = {
+
+    // 读取该文件组的所有向量
+    var vectorOffset = 0L
+    val allVectors = mutable.ArrayBuffer.empty[(Long, Array[Float], String)]
+    val fileInfos = mutable.ArrayBuffer.empty[DataFileEntry]
+
+    group.files.foreach { fileInfo =>
+      val df = spark.read.parquet(fileInfo.filePath)
+      val vectors = df.select(vectorColumn).collect().map { row =>
+        row.getAs[mutable.WrappedArray[Float]](0).toArray
+      }
+
+      vectors.zipWithIndex.foreach { case (vec, localIdx) =>
+        val globalIdx = vectorOffset + localIdx
+        allVectors += ((globalIdx, vec, fileInfo.filePath))
+      }
+
+      fileInfos += DataFileEntry(
+        filePath = fileInfo.filePath,
+        numVectors = vectors.length,
+        vectorOffset = vectorOffset
+      )
+
+      vectorOffset += vectors.length
+    }
+
+    if (allVectors.isEmpty) {
+      throw new IllegalArgumentException(s"No vectors found in file group ${group.groupId}")
+    }
+
     // 构建Local HNSW
+    val vectors = allVectors.map { case (id, vec, _) => (id, vec) }.toArray
     val localIndex = buildHNSW(vectors, config)
-    
+
     // 选择Boundary Nodes
     val boundaryNodes = selectBoundaryNodes(
-      localIndex, 
+      localIndex,
       targetCount = Math.sqrt(vectors.length).toInt
     )
-    
+
     // 持久化索引
-    val indexFilePath = s"${config.outputPath}/local/v${config.version}/$fileId.hnsw"
+    val indexFilePath = s"$outputPath/local/v${config.version}/${group.groupId}.hnsw"
     saveLocalIndex(localIndex, indexFilePath)
-    
+
     // 返回元数据
-    Iterator(LocalIndexMetadata(
-      fileId = fileId,
-      dataFile = config.dataPath,  // 原始数据文件路径
+    LocalIndexMetadata(
+      indexId = group.groupId,
+      dataFiles = fileInfos.toArray,
       indexFile = indexFilePath,
-      numVectors = vectors.length,
+      totalVectors = vectors.length,
       entryPoint = localIndex.entryPoint,
       maxLayer = localIndex.maxLayer,
       boundaryNodes = boundaryNodes.map(_._1).toArray,
       boundaryVectors = boundaryNodes.map(_._2).toArray,
       hnswConfig = config,
       checksum = computeChecksum(indexFilePath)
-    ))
+    )
   }
+}
+
+case class DataFileEntry(
+  filePath: String,
+  numVectors: Long,
+  vectorOffset: Long
+)
+
+case class LocalIndexMetadata(
+  indexId: String,
+  dataFiles: Array[DataFileEntry],
+  indexFile: String,
+  totalVectors: Long,
+  entryPoint: Long,
+  maxLayer: Int,
+  boundaryNodes: Array[Long],
+  boundaryVectors: Array[Array[Float]],
+  hnswConfig: HNSWConfig,
+  checksum: String
+)
   
   def buildHNSW(
     vectors: Array[(Long, Array[Float])],
@@ -191,7 +377,7 @@ object LocalIndexBuilder {
 }
 ```
 
-### 5.2.2 内存管理
+### 5.3.2 内存管理
 
 ```scala
 case class MemoryConfig(
@@ -244,7 +430,7 @@ def adjustPartitioning(
 }
 ```
 
-### 5.2.3 容错机制
+### 5.3.3 容错机制
 
 ```scala
 def buildWithRetry(
@@ -321,9 +507,9 @@ def buildWithCheckpoint(
 }
 ```
 
-## 5.3 Phase 2: 全局索引构建
+## 5.4 Phase 2: 全局索引构建
 
-### 5.3.1 Boundary Nodes收集
+### 5.4.1 Boundary Nodes收集
 
 ```scala
 object GlobalIndexBuilder {
@@ -466,7 +652,7 @@ object GlobalIndexBuilder {
 }
 ```
 
-### 5.3.2 Global Index持久化
+### 5.4.2 Global Index持久化
 
 ```scala
 def saveGlobalIndex(
@@ -535,7 +721,7 @@ def saveGlobalIndex(
 }
 ```
 
-## 5.4 Phase 3: 元数据生成
+## 5.5 Phase 3: 元数据生成
 
 ```scala
 def generateMetadata(
@@ -606,16 +792,16 @@ def saveMetadata(metadata: IndexMetadata, path: String): Unit = {
 }
 ```
 
-## 5.5 完整构建流程示例
+## 5.6 完整构建流程示例
 
 ```scala
 object ANNIndexBuilder {
-  
+
   def main(args: Array[String]): Unit = {
     val spark = SparkSession.builder()
       .appName("ANN Index Builder")
       .getOrCreate()
-    
+
     val config = IndexConfig(
       dataPath = "s3://bucket/vectors/",
       vectorColumn = "embedding",
@@ -624,24 +810,48 @@ object ANNIndexBuilder {
       dimension = 768,
       distanceMetric = "l2",
       hnswConfig = HNSWConfig(M = 16, efConstruction = 200),
-      numPartitions = 100
+      groupingStrategy = SingleFile,  // 或 MergeSmall
+      targetVectorsPerIndex = 500000  // 用于MergeSmall策略
     )
-    
+
     try {
       println("=" * 80)
-      println("Phase 1: Building Local Indices")
+      println("Phase 0: Discovering and Grouping Data Files")
       println("=" * 80)
-      
-      val localIndices = buildWithCheckpoint(
+
+      // 发现所有数据文件
+      val dataFiles = FileDiscovery.discoverDataFiles(
         spark,
-        config,
-        checkpointDir = config.outputPath + "/checkpoints"
+        config.dataPath,
+        config.vectorColumn
       )
-      
+      println(s"Found ${dataFiles.length} data files")
+
+      // 根据策略分组
+      val fileGroups = FileGroupingStrategy.groupFiles(
+        dataFiles,
+        config.groupingStrategy,
+        config.targetVectorsPerIndex
+      )
+      println(s"Created ${fileGroups.length} file groups for indexing")
+
+      println("\n" + "=" * 80)
+      println("Phase 1: Building Local Indices (File-based)")
+      println("=" * 80)
+
+      val localIndices = LocalIndexBuilder.buildLocalIndices(
+        spark,
+        fileGroups,
+        config.vectorColumn,
+        config.outputPath,
+        config.hnswConfig
+      )
+      println(s"Built ${localIndices.count()} local indices")
+
       println("\n" + "=" * 80)
       println("Phase 2: Building Global Index")
       println("=" * 80)
-      
+
       val globalIndex = GlobalIndexBuilder.buildGlobalIndex(
         spark,
         localIndices,
@@ -652,31 +862,44 @@ object ANNIndexBuilder {
           hnswConfig = HNSWConfig(M = 32, efConstruction = 200)
         )
       )
-      
+
       println("\n" + "=" * 80)
       println("Phase 3: Generating Metadata")
       println("=" * 80)
-      
+
       val metadata = generateMetadata(
         spark,
         config,
         localIndices,
         globalIndex
       )
-      
+
       println("\n" + "=" * 80)
       println("Index Build Complete!")
       println("=" * 80)
       println(s"Total vectors indexed: ${metadata.statistics.totalVectors}")
-      println(s"Number of files: ${metadata.statistics.numFiles}")
+      println(s"Number of data files: ${dataFiles.length}")
+      println(s"Number of local indices: ${fileGroups.length}")
       println(s"Index size: ${formatBytes(metadata.statistics.totalIndexSizeBytes)}")
       println(s"Metadata path: ${config.outputPath}/metadata/index_${config.version}.json")
-      
+
     } finally {
       spark.stop()
     }
   }
 }
+
+case class IndexConfig(
+  dataPath: String,
+  vectorColumn: String,
+  outputPath: String,
+  version: String,
+  dimension: Int,
+  distanceMetric: String,
+  hnswConfig: HNSWConfig,
+  groupingStrategy: GroupingStrategy = SingleFile,
+  targetVectorsPerIndex: Long = 500000
+)
 ```
 
 ---

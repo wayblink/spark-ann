@@ -211,22 +211,42 @@
     
     "local_index_config": {
       "type": "object",
-      "required": ["file_id", "data_file", "index_file"],
+      "required": ["index_id", "data_files", "index_file"],
       "properties": {
-        "file_id": {
+        "index_id": {
           "type": "string",
-          "description": "文件唯一标识"
+          "description": "索引唯一标识（可基于文件名或组ID）"
         },
-        "data_file": {
-          "type": "string",
-          "description": "数据文件路径"
+        "data_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["file_path"],
+            "properties": {
+              "file_path": {
+                "type": "string",
+                "description": "数据文件完整路径"
+              },
+              "num_vectors": {
+                "type": "integer",
+                "description": "该文件中的向量数量"
+              },
+              "vector_offset": {
+                "type": "integer",
+                "description": "该文件向量在索引中的起始偏移量"
+              }
+            }
+          },
+          "minItems": 1,
+          "description": "该索引覆盖的数据文件列表（支持1个或多个文件）"
         },
         "index_file": {
           "type": "string",
           "description": "索引文件路径"
         },
-        "num_vectors": {
-          "type": "integer"
+        "total_vectors": {
+          "type": "integer",
+          "description": "索引中的总向量数（所有文件之和）"
         },
         "entry_point": {
           "type": "integer",
@@ -313,10 +333,16 @@
   
   "local_indices": [
     {
-      "file_id": "file_001",
-      "data_file": "s3://my-bucket/vectors/part-00001.parquet",
-      "index_file": "s3://my-bucket/indices/local/v1/part-00001.hnsw",
-      "num_vectors": 1000000,
+      "index_id": "idx_file_001",
+      "data_files": [
+        {
+          "file_path": "s3://my-bucket/vectors/year=2025/month=01/file_001.parquet",
+          "num_vectors": 1000000,
+          "vector_offset": 0
+        }
+      ],
+      "index_file": "s3://my-bucket/indices/local/v1/file_001.hnsw",
+      "total_vectors": 1000000,
       "entry_point": 42,
       "max_layer": 4,
       "boundary_nodes": [42, 100, 256, 1337, 9999],
@@ -329,10 +355,21 @@
       "build_timestamp": "2025-01-15T10:30:00Z"
     },
     {
-      "file_id": "file_002",
-      "data_file": "s3://my-bucket/vectors/part-00002.parquet",
-      "index_file": "s3://my-bucket/indices/local/v1/part-00002.hnsw",
-      "num_vectors": 950000,
+      "index_id": "idx_group_001",
+      "data_files": [
+        {
+          "file_path": "s3://my-bucket/vectors/year=2025/month=01/file_002.parquet",
+          "num_vectors": 450000,
+          "vector_offset": 0
+        },
+        {
+          "file_path": "s3://my-bucket/vectors/year=2025/month=01/file_003.parquet",
+          "num_vectors": 500000,
+          "vector_offset": 450000
+        }
+      ],
+      "index_file": "s3://my-bucket/indices/local/v1/group_001.hnsw",
+      "total_vectors": 950000,
       "entry_point": 88,
       "max_layer": 4,
       "boundary_nodes": [88, 200, 512, 2048, 8888],
@@ -449,29 +486,34 @@ PARTITIONED BY (file_id);                   -- 按文件分区便于局部查询
 **Schema**:
 ```sql
 CREATE TABLE routing (
-  node_id STRING PRIMARY KEY,
-  file_id STRING,
+  node_id STRING PRIMARY KEY,               -- 格式: "index_id:local_vector_id"
+  index_id STRING,                          -- 所属Local Index的ID
   local_vector_id BIGINT,
-  data_file_path STRING,                    -- 完整数据文件路径
-  index_file_path STRING,                   -- 完整索引文件路径
+  source_file_path STRING,                  -- 向量来源数据文件路径
+  index_file_path STRING,                   -- 索引文件路径
   max_layer INT,
   is_boundary_node BOOLEAN,
   vector ARRAY<FLOAT>                       -- 可选，缓存向量
 )
-PARTITIONED BY (file_id);
+PARTITIONED BY (index_id);
 ```
 
 **示例查询**:
 ```sql
--- 查找节点所属文件
-SELECT file_id, data_file_path 
-FROM routing 
-WHERE node_id = 'file_001:42';
+-- 查找节点所属索引和数据文件
+SELECT index_id, source_file_path, index_file_path
+FROM routing
+WHERE node_id = 'idx_file_001:42';
 
--- 列出某文件的所有boundary nodes
-SELECT node_id, local_vector_id 
-FROM routing 
-WHERE file_id = 'file_001' AND is_boundary_node = true;
+-- 列出某索引的所有boundary nodes
+SELECT node_id, local_vector_id, source_file_path
+FROM routing
+WHERE index_id = 'idx_file_001' AND is_boundary_node = true;
+
+-- 查找某数据文件对应的索引
+SELECT DISTINCT index_id, index_file_path
+FROM routing
+WHERE source_file_path = 's3://my-bucket/vectors/file_001.parquet';
 ```
 
 ## 4.4 Local HNSW存储格式
