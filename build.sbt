@@ -6,6 +6,8 @@ val sparkVersion = "3.5.0"
 val hnswlibVersion = "1.1.0"
 val json4sVersion = "3.7.0-M11"  // Match Spark 3.5.0's json4s version
 val scalatestVersion = "3.2.15"
+val akkaVersion = "2.6.20"
+val akkaHttpVersion = "10.2.10"
 
 lazy val commonSettings = Seq(
   scalacOptions ++= Seq(
@@ -19,7 +21,7 @@ lazy val commonSettings = Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(core, sparkIntegration, sparkSqlExtension)
+  .aggregate(core, sparkIntegration, sparkSqlExtension, apiServer)
   .settings(
     name := "spark-ann",
     publish / skip := true
@@ -60,5 +62,22 @@ lazy val sparkSqlExtension = (project in file("spark-sql-extension"))
       "org.apache.spark" %% "spark-sql" % sparkVersion % Provided,
       "org.apache.spark" %% "spark-catalyst" % sparkVersion % Provided,
       "org.scalatest" %% "scalatest" % scalatestVersion % Test
+    )
+  )
+
+lazy val apiServer = (project in file("api-server"))
+  .dependsOn(core)
+  .settings(commonSettings)
+  .settings(
+    name := "spark-ann-api-server",
+    libraryDependencies ++= Seq(
+      "com.typesafe.akka" %% "akka-actor-typed" % akkaVersion,
+      "com.typesafe.akka" %% "akka-stream" % akkaVersion,
+      "com.typesafe.akka" %% "akka-http" % akkaHttpVersion,
+      "com.typesafe.akka" %% "akka-http-spray-json" % akkaHttpVersion,
+      "ch.qos.logback" % "logback-classic" % "1.2.11",
+      "org.scalatest" %% "scalatest" % scalatestVersion % Test,
+      "com.typesafe.akka" %% "akka-actor-testkit-typed" % akkaVersion % Test,
+      "com.typesafe.akka" %% "akka-http-testkit" % akkaHttpVersion % Test
     )
   )

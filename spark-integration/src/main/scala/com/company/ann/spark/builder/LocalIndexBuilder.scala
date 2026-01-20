@@ -12,11 +12,12 @@ import java.io.File
  * @param numVectors   Number of vectors from this file
  * @param vectorOffset Starting offset for vectors from this file in the index
  */
+@SerialVersionUID(1L)
 case class DataFileEntry(
   filePath: String,
   numVectors: Long,
   vectorOffset: Long
-)
+) extends Serializable
 
 /**
  * Metadata for a built local index.
@@ -27,13 +28,14 @@ case class DataFileEntry(
  * @param totalVectors Total number of vectors in the index
  * @param dimension    Vector dimensionality
  */
+@SerialVersionUID(1L)
 case class LocalIndexMetadata(
   indexId: String,
   dataFiles: Array[DataFileEntry],
   indexPath: String,
   totalVectors: Long,
   dimension: Int
-) {
+) extends Serializable {
   override def toString: String = {
     s"LocalIndexMetadata($indexId, ${dataFiles.length} files, $totalVectors vectors, dim=$dimension)"
   }

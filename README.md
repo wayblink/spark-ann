@@ -1,6 +1,42 @@
 # Spark ANN Index
 
-A distributed Approximate Nearest Neighbor (ANN) index system built on Apache Spark.
+A distributed Approximate Nearest Neighbor (ANN) index system built on Apache Spark, using the HNSW algorithm for efficient vector similarity search.
+
+## Overview
+
+Spark ANN provides scalable vector search with:
+- **Hierarchical HNSW Indexing**: Local indexes + global routing for distributed search
+- **DataFrame API**: Native Spark integration with implicit extensions
+- **REST API Server**: Production-ready HTTP endpoints for index management and search
+- **File-Based Building**: Efficiently handles large datasets across distributed file systems
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    REST API Server                          │
+│           (Akka HTTP - Search & Index Management)           │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                  Spark Integration Layer                    │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  DataFrame API: buildANNIndex(), annSearch()          │  │
+│  └───────────────────────────────────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  Builder: FileDiscovery → FileGrouping → IndexBuilder │  │
+│  │  Search: ANNSearcher (routing + multi-index merge)    │  │
+│  └───────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│              Core Module (No Spark Dependency)              │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  HNSWLibIndex (hnswlib-core wrapper)                  │  │
+│  │  → C++ HNSW via JNI for high performance              │  │
+│  └───────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Prerequisites
 
@@ -11,73 +47,303 @@ A distributed Approximate Nearest Neighbor (ANN) index system built on Apache Sp
 ### macOS Installation
 
 ```bash
-# Install Java
 brew install openjdk@11
-
-# Install sbt
 brew install sbt
+```
+
+## Quick Start
+
+### Building an Index
+
+```scala
+import com.company.ann.spark.api._
+import com.company.ann.spark.api.ANNDataFrameExtensions._
+
+val spark = SparkSession.builder()
+  .appName("ANN Quick Start")
+  .master("local[4]")
+  .getOrCreate()
+
+import spark.implicits._
+
+// Create sample data
+val vectors = Seq(
+  (1L, Seq(0.1f, 0.2f, 0.3f, 0.4f)),
+  (2L, Seq(0.2f, 0.3f, 0.4f, 0.5f)),
+  (3L, Seq(0.3f, 0.4f, 0.5f, 0.6f))
+).toDF("id", "vector")
+
+// Build index using DataFrame extension
+val metadata = vectors.buildANNIndex(
+  vectorColumn = "vector",
+  outputPath = "/tmp/ann_index"
+)
+println(s"Built index with ${metadata.totalVectors} vectors")
+```
+
+### Searching
+
+```scala
+// Single query search
+val queryVector = Array(0.15f, 0.25f, 0.35f, 0.45f)
+val results = vectors.annSearch(
+  indexPath = "/tmp/ann_index",
+  queryVector = queryVector,
+  k = 3
+)
+results.show()
+// +---+----------+--------+
+// | id|  distance| indexId|
+// +---+----------+--------+
+// |  1|     0.012| local_0|
+// |  2|     0.023| local_0|
+// |  3|     0.056| local_0|
+// +---+----------+--------+
+
+// Batch search
+val queriesDF = Seq(
+  (0, Seq(0.1f, 0.2f, 0.3f, 0.4f)),
+  (1, Seq(0.5f, 0.6f, 0.7f, 0.8f))
+).toDF("queryId", "vector")
+
+val batchResults = ANNIndexAPI.batchSearch(
+  spark = spark,
+  indexPath = "/tmp/ann_index",
+  queries = queriesDF,
+  queryVectorColumn = "vector",
+  k = 5
+)
 ```
 
 ## Project Structure
 
 ```
 spark-ann/
-├── build.sbt                    # Build configuration
-├── core/                        # Core algorithms (no Spark dependency)
+├── build.sbt                          # Build configuration
+├── core/                              # Core algorithms (no Spark dependency)
 │   └── src/main/scala/
-│       ├── index/               # HNSW implementation
-│       ├── storage/             # Storage layer
-│       ├── metadata/            # Metadata management
-│       └── testutil/            # Test data generators
-├── spark-integration/           # Spark integration
+│       └── com/company/ann/core/
+│           ├── index/                 # HNSW implementation
+│           │   ├── HNSWIndex.scala    # Abstract trait
+│           │   ├── HNSWLibIndex.scala # hnswlib-core wrapper
+│           │   └── HNSWConfig.scala   # Configuration
+│           └── testutil/              # Test data generators
+├── spark-integration/                 # Spark integration
 │   └── src/main/scala/
-│       ├── api/                 # DataFrame API
-│       ├── rdd/                 # RDD operations
-│       ├── builder/             # Index construction
-│       └── testutil/            # Spark test utilities
-├── spark-sql-extension/         # SQL extension (Phase 2)
+│       └── com/company/ann/spark/
+│           ├── api/                   # DataFrame API
+│           │   ├── ANNDataFrameAPI.scala    # Extensions + static API
+│           │   └── ANNIndexConfig.scala     # Config & metadata classes
+│           ├── builder/               # Index construction
+│           │   ├── ANNIndexBuilder.scala    # Main orchestrator
+│           │   ├── LocalIndexBuilder.scala  # Per-partition builder
+│           │   ├── FileDiscovery.scala      # Parquet file discovery
+│           │   └── FileGroupingStrategy.scala # File grouping strategies
+│           ├── search/                # Query execution
+│           │   └── ANNSearcher.scala        # Routing + result merging
+│           └── examples/              # Example code
+│               └── QuickStart.scala
+├── api-server/                        # REST API server
 │   └── src/main/scala/
-│       ├── optimizer/           # Optimizer rules
-│       ├── execution/           # Physical operators
-│       └── expressions/         # Built-in functions
-└── native/                      # Native acceleration (Phase 3)
-    ├── cpp/
-    └── jni/
+│       └── com/company/ann/server/
+│           ├── AnnApiServer.scala     # Main entry point
+│           ├── model/                 # Request/response DTOs
+│           ├── routes/                # HTTP route handlers
+│           └── service/               # Business logic
+├── spark-sql-extension/               # SQL extension (Phase 2)
+└── native/                            # Native acceleration (Phase 3)
 ```
 
-## Building
+## Building & Testing
 
 ```bash
 # Compile all modules
 sbt compile
 
-# Run tests
+# Run all tests
 sbt test
 
-# Run only core module tests
+# Run specific module tests
 sbt core/test
-
-# Run only spark-integration tests
 sbt sparkIntegration/test
+sbt apiServer/test
 
 # Package JAR files
 sbt package
 ```
 
+## DataFrame API Reference
+
+### Implicit Extensions
+
+Import to add ANN methods directly to DataFrames:
+
+```scala
+import com.company.ann.spark.api.ANNDataFrameExtensions._
+
+df.buildANNIndex(vectorColumn, outputPath)
+df.annSearch(indexPath, queryVector, k)
+df.annBatchSearch(indexPath, queries, queryVectorColumn, k)
+```
+
+### Static API
+
+Use `ANNIndexAPI` for explicit operations:
+
+```scala
+import com.company.ann.spark.api.ANNIndexAPI
+
+ANNIndexAPI.buildIndex(df, vectorColumn, outputPath, config)
+ANNIndexAPI.search(spark, indexPath, queryVector, k)
+ANNIndexAPI.batchSearch(spark, indexPath, queries, queryVectorColumn, k)
+ANNIndexAPI.loadSearcher(spark, indexPath)
+ANNIndexAPI.discoverDataFiles(spark, dataPath, vectorColumn)
+ANNIndexAPI.groupFiles(files, strategy)
+```
+
+### Configuration
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `M` | Int | 16 | HNSW connections per node (higher = better recall, more memory) |
+| `efConstruction` | Int | 200 | Build-time accuracy (higher = better quality, slower build) |
+| `distanceType` | String | "euclidean" | Distance metric: "euclidean" or "cosine" |
+| `targetVectorsPerIndex` | Long | 500000 | Target vectors per local index |
+| `boundaryNodesPerIndex` | Int | 50 | Boundary nodes for global routing |
+| `groupingStrategy` | Strategy | SingleFile | File grouping: `SingleFile` or `MergeSmall` |
+
+### Search Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `k` | Int | required | Number of neighbors to return |
+| `ef` | Int | 50 | Search accuracy (higher = more accurate, slower) |
+| `nprobe` | Int | 3 | Number of local indexes to probe |
+
+### File Grouping Strategies
+
+| Strategy | Description | Use Case |
+|----------|-------------|----------|
+| `SingleFile` | One index per data file | When files are naturally partitioned |
+| `MergeSmall` | Merge small files to target size | Mixed file sizes |
+
+### Advanced: File-Based Index Building
+
+For large datasets with more control over file grouping:
+
+```scala
+import com.company.ann.spark.builder.{FileDiscovery, FileGroupingStrategy, MergeSmall}
+
+// Discover data files
+val dataFiles = FileDiscovery.discoverDataFiles(spark, "/data/vectors", "vector")
+
+// Group files (merge small files to ~500K vectors each)
+val fileGroups = FileGroupingStrategy.groupFiles(dataFiles, MergeSmall, 500000)
+
+// Build index from file groups
+val metadata = ANNIndexAPI.buildIndexFromFileGroups(
+  spark = spark,
+  fileGroups = fileGroups,
+  vectorColumn = "vector",
+  outputPath = "/tmp/ann_index"
+)
+```
+
+## REST API Server
+
+### Starting the Server
+
+```bash
+sbt apiServer/run
+
+# With custom port
+ANN_SERVER_PORT=9090 sbt apiServer/run
+```
+
+The server starts at `http://localhost:8080` by default.
+
+### Configuration
+
+| Environment Variable | Description | Default |
+|---------------------|-------------|---------|
+| `ANN_SERVER_HOST` | Bind host | `0.0.0.0` |
+| `ANN_SERVER_PORT` | Bind port | `8080` |
+| `ANN_INDEX_PATH` | Index file base path | `/data/indexes` |
+
+### API Endpoints
+
+#### Health & Status
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/health` | Health status with statistics |
+| GET | `/api/v1/health/ready` | Readiness probe |
+| GET | `/api/v1/health/live` | Liveness probe |
+
+#### Search Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/indexes/{indexId}/search` | Search single index |
+| POST | `/api/v1/search` | Multi-index search with merging |
+| POST | `/api/v1/search/batch` | Batch search |
+
+#### Index Management
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/indexes` | List all loaded indexes |
+| GET | `/api/v1/indexes/{indexId}` | Get index details |
+| POST | `/api/v1/indexes` | Load or create index |
+| DELETE | `/api/v1/indexes/{indexId}` | Unload index |
+| POST | `/api/v1/indexes/{indexId}/vectors` | Add vectors |
+| POST | `/api/v1/indexes/{indexId}/save` | Save index to disk |
+
+### Usage Examples
+
+```bash
+# Health check
+curl http://localhost:8080/api/v1/health
+
+# Create an index
+curl -X POST http://localhost:8080/api/v1/indexes \
+  -H "Content-Type: application/json" \
+  -d '{
+    "indexId": "products",
+    "vectors": [
+      {"id": 1, "vector": [0.1, 0.2, 0.3, 0.4]},
+      {"id": 2, "vector": [0.5, 0.6, 0.7, 0.8]}
+    ],
+    "config": {"m": 16, "efConstruction": 200, "distanceType": "cosine"}
+  }'
+
+# Search for nearest neighbors
+curl -X POST http://localhost:8080/api/v1/indexes/products/search \
+  -H "Content-Type: application/json" \
+  -d '{"vector": [0.15, 0.25, 0.35, 0.45], "k": 5, "ef": 100}'
+
+# Batch search
+curl -X POST http://localhost:8080/api/v1/search/batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "indexId": "products",
+    "queries": [
+      {"vector": [0.1, 0.2, 0.3, 0.4], "k": 5},
+      {"vector": [0.5, 0.6, 0.7, 0.8], "k": 3}
+    ]
+  }'
+```
+
 ## Benchmarks
 
-### SIFT Benchmarks
-
-The project includes benchmarks using SIFT datasets (128-dimensional vectors).
-
-#### Supported Datasets
+### SIFT Datasets
 
 | Dataset | Base Vectors | Queries | Size | Use Case |
 |---------|-------------|---------|------|----------|
 | **SIFT10K** | 10K | 100 | ~5 MB | Fast dev testing (default) |
 | **SIFT1M** | 1M | 10K | ~500 MB | Full benchmark |
 
-#### Setup
+### Setup
 
 Place dataset files in `datasets/<variant>/`:
 ```
@@ -94,84 +360,55 @@ datasets/
 
 Dataset source: http://corpus-texmex.irisa.fr/
 
-#### Running Benchmarks
+### Running Benchmarks
 
 ```bash
-# Run with SIFT10K (default, fast)
+# SIFT10K (default, fast)
 sbt "core/testOnly *SiftBenchmarkTest"
 
-# Run with SIFT1M (full benchmark)
+# SIFT1M (full benchmark)
 SIFT_DATASET=sift1m sbt "core/testOnly *SiftBenchmarkTest"
 
-# Run only dataset parser tests (no dataset required)
-sbt "core/testOnly *SiftDatasetTest"
-
-# Skip benchmarks (e.g., in CI)
+# Skip benchmarks in CI
 SKIP_BENCHMARK=true sbt "core/test"
 ```
 
-#### Benchmark Tests
+### Performance Targets
 
-| Test | Description | Target |
-|------|-------------|--------|
-| recall@1 | Top-1 accuracy with ef=200 | >= 95% |
-| recall@10 | Top-10 accuracy with ef=50 | >= 90% |
-| recall@100 | Top-100 accuracy with ef=200 | >= 85% |
-| query latency | Average query time | < 1ms (1M) / < 0.5ms (10K) |
-| build throughput | Index construction speed | >= 5K vectors/sec |
-| recall vs ef | Tradeoff analysis | - |
-
-## Quick Start
-
-```scala
-import com.company.ann.spark.api._
-import com.company.ann.spark.testutil.SparkTestData
-
-val spark = SparkSession.builder()
-  .appName("ANN Quick Start")
-  .master("local[4]")
-  .getOrCreate()
-
-// Generate test data
-val vectors = SparkTestData.generateAndSave(
-  spark,
-  numVectors = 10000,
-  dimension = 128,
-  path = "/tmp/vectors",
-  dataType = "clustered"
-)
-
-// Build index (coming in Week 2+)
-// val metadata = ANNIndexAPI.buildIndex(
-//   df = vectors,
-//   vectorColumn = "vector",
-//   outputPath = "/tmp/ann_index"
-// )
-
-// Query (coming in Week 2+)
-// val results = vectors.annSearch(
-//   indexPath = "/tmp/ann_index",
-//   queryVector = queryVector,
-//   k = 10
-// )
-```
+| Test | Target |
+|------|--------|
+| recall@1 (ef=200) | >= 95% |
+| recall@10 (ef=50) | >= 90% |
+| recall@100 (ef=200) | >= 85% |
+| Query latency (1M) | < 1ms |
+| Build throughput | >= 5K vectors/sec |
 
 ## Implementation Progress
 
-### Phase 1: Core Library (Week 1-4)
-- [x] Day 1: Project structure and test data generators
-- [x] Day 2-3: HNSW algorithm wrapper (HNSWLibIndex with hnswlib-core)
-- [ ] Day 4-5: Spark Local Index builder
-- [ ] Day 6: Boundary node selection
-- [ ] Day 7-8: DataFrame API
-- [ ] Week 4: Metadata and end-to-end integration
+### Phase 1: Core Library (Complete)
+- [x] Project structure and test data generators
+- [x] HNSW algorithm wrapper (HNSWLibIndex with hnswlib-core)
+- [x] Spark Local Index builder
+- [x] Boundary node selection and global routing index
+- [x] DataFrame API (ANNDataFrameExtensions, ANNIndexAPI)
+- [x] File discovery and grouping strategies
+- [x] ANNSearcher with multi-index routing
 
-### Phase 2: SQL Extension (Week 5-8)
+### REST API Server (MVP Complete)
+- [x] Health & status endpoints
+- [x] Single/multi-index search
+- [x] Batch search
+- [x] Index management (create, load, unload, save)
+- [ ] Prometheus metrics
+- [ ] API key authentication
+- [ ] TLS/HTTPS support
+
+### Phase 2: SQL Extension (Planned)
 - [ ] Custom optimizer rules
 - [ ] Query plan optimization
 - [ ] Iceberg integration
 
-### Phase 3: Native Acceleration (Week 9-12, Optional)
+### Phase 3: Native Acceleration (Optional)
 - [ ] JNI interface
 - [ ] SIMD optimization
 - [ ] Zero-copy transfer

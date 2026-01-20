@@ -1,0 +1,301 @@
+package com.company.ann.spark.builder
+
+import com.company.ann.core.index.{HNSWConfig, HNSWLibIndex, SearchResult}
+import com.company.ann.spark.api.{ANNIndexConfig, ANNIndexMetadata, ANNIndexStatistics}
+import org.apache.spark.sql.{DataFrame, SparkSession}
+
+import java.io.{File, ObjectOutputStream}
+import java.nio.file.{Files, Paths}
+import scala.collection.mutable
+import scala.util.Random
+
+/**
+ * Boundary node selected from a local index for global routing.
+ *
+ * @param globalId    Unique ID across all indexes (format: "indexId:localId")
+ * @param indexId     ID of the source local index
+ * @param localId     Vector ID within the local index
+ * @param vector      The boundary node vector
+ */
+@SerialVersionUID(1L)
+case class GlobalBoundaryNode(
+  globalId: String,
+  indexId: String,
+  localId: Long,
+  vector: Array[Float]
+) extends Serializable
+
+/**
+ * Builder for constructing complete ANN indexes.
+ * Handles local index building, boundary node selection, and global index construction.
+ */
+class ANNIndexBuilder(spark: SparkSession) {
+
+  /**
+   * Build a complete ANN index from a DataFrame.
+   *
+   * @param df           DataFrame containing vectors
+   * @param vectorColumn Name of the column containing vectors
+   * @param outputPath   Path to store the built index
+   * @param config       Index configuration
+   * @return Metadata for the built index
+   */
+  def build(
+    df: DataFrame,
+    vectorColumn: String,
+    outputPath: String,
+    config: ANNIndexConfig = ANNIndexConfig()
+  ): ANNIndexMetadata = {
+    val startTime = System.currentTimeMillis()
+
+    // Step 1: Write DataFrame to temporary parquet files if not already on disk
+    val dataPath = s"$outputPath/data"
+    println(s"Saving data to $dataPath...")
+    df.write.mode("overwrite").parquet(dataPath)
+
+    // Step 2: Discover data files
+    println("Discovering data files...")
+    val dataFiles = FileDiscovery.discoverDataFiles(spark, dataPath, vectorColumn)
+    println(s"Found ${dataFiles.length} data files")
+
+    // Step 3: Group files according to strategy
+    println(s"Grouping files using ${config.groupingStrategy} strategy...")
+    val fileGroups = FileGroupingStrategy.groupFiles(
+      dataFiles,
+      config.groupingStrategy,
+      config.targetVectorsPerIndex
+    )
+    println(s"Created ${fileGroups.length} file groups")
+
+    // Build from file groups
+    buildFromFileGroups(fileGroups, vectorColumn, outputPath, config, startTime)
+  }
+
+  /**
+   * Build a complete ANN index from pre-grouped files.
+   *
+   * @param fileGroups   Array of file groups to build indexes for
+   * @param vectorColumn Name of the column containing vectors
+   * @param outputPath   Path to store the built index
+   * @param config       Index configuration
+   * @return Metadata for the built index
+   */
+  def buildFromFileGroups(
+    fileGroups: Array[FileGroup],
+    vectorColumn: String,
+    outputPath: String,
+    config: ANNIndexConfig = ANNIndexConfig(),
+    startTime: Long = System.currentTimeMillis()
+  ): ANNIndexMetadata = {
+
+    // Step 1: Build local indexes
+    println("Building local indexes...")
+    val hnswConfig = config.toHNSWConfig()
+    val localMetadata = LocalIndexBuilder.buildFromFileGroups(
+      spark,
+      fileGroups,
+      vectorColumn,
+      outputPath,
+      hnswConfig
+    )
+
+    if (localMetadata.isEmpty) {
+      throw new IllegalArgumentException("No local indexes were built")
+    }
+
+    val dimension = localMetadata.head.dimension
+
+    // Step 2: Collect boundary nodes from each local index
+    println("Collecting boundary nodes...")
+    val boundaryNodes = collectBoundaryNodes(
+      localMetadata,
+      vectorColumn,
+      config.boundaryNodesPerIndex
+    )
+    println(s"Collected ${boundaryNodes.length} boundary nodes from ${localMetadata.length} local indexes")
+
+    // Step 3: Build global routing index
+    val globalIndexPath = if (boundaryNodes.nonEmpty && localMetadata.length > 1) {
+      println("Building global routing index...")
+      val globalPath = buildGlobalIndex(boundaryNodes, dimension, outputPath, config)
+      println(s"Global index built at $globalPath")
+      Some(globalPath)
+    } else {
+      println("Skipping global index (single local index or no boundary nodes)")
+      None
+    }
+
+    // Step 4: Calculate statistics
+    val totalVectors = localMetadata.map(_.totalVectors).sum
+    val totalFiles = localMetadata.map(_.dataFiles.length).sum
+    val buildTimeMs = System.currentTimeMillis() - startTime
+
+    val statistics = ANNIndexStatistics(
+      totalVectors = totalVectors,
+      totalFiles = totalFiles,
+      numLocalIndexes = localMetadata.length,
+      dimension = dimension,
+      buildTimeMs = buildTimeMs
+    )
+
+    // Step 5: Create and save metadata
+    val metadata = ANNIndexMetadata(
+      indexPath = outputPath,
+      localIndexes = localMetadata,
+      globalIndexPath = globalIndexPath,
+      config = config,
+      statistics = statistics
+    )
+
+    saveMetadata(metadata, outputPath)
+
+    println(s"ANN index built successfully in ${buildTimeMs}ms")
+    println(statistics)
+
+    metadata
+  }
+
+  /**
+   * Collect boundary nodes from all local indexes.
+   */
+  private def collectBoundaryNodes(
+    localMetadata: Array[LocalIndexMetadata],
+    vectorColumn: String,
+    nodesPerIndex: Int
+  ): Array[GlobalBoundaryNode] = {
+
+    localMetadata.flatMap { meta =>
+      // Read vectors from files covered by this index
+      val allVectors = mutable.ArrayBuffer.empty[(Long, Array[Float])]
+
+      meta.dataFiles.foreach { fileEntry =>
+        val df = spark.read.parquet(fileEntry.filePath)
+        val vectors = df.select(vectorColumn).collect().zipWithIndex.map {
+          case (row, localIdx) =>
+            val globalIdx = fileEntry.vectorOffset + localIdx
+            (globalIdx, row.getAs[Seq[Float]](0).toArray)
+        }
+        allVectors ++= vectors
+      }
+
+      // Select boundary nodes using distributed sampling
+      selectBoundaryNodes(allVectors.toArray, meta.indexId, nodesPerIndex)
+    }
+  }
+
+  /**
+   * Select boundary nodes from a set of vectors.
+   * Uses distributed sampling to get representative nodes.
+   */
+  private def selectBoundaryNodes(
+    vectors: Array[(Long, Array[Float])],
+    indexId: String,
+    targetCount: Int
+  ): Array[GlobalBoundaryNode] = {
+
+    val actualCount = math.min(targetCount, vectors.length)
+
+    if (actualCount <= 0) {
+      return Array.empty
+    }
+
+    // Distributed sampling: select evenly spaced samples
+    val step = vectors.length.toDouble / actualCount
+    (0 until actualCount).map { i =>
+      val idx = (i * step).toInt
+      val (localId, vector) = vectors(idx)
+      GlobalBoundaryNode(
+        globalId = s"$indexId:$localId",
+        indexId = indexId,
+        localId = localId,
+        vector = vector
+      )
+    }.toArray
+  }
+
+  /**
+   * Build the global routing index from boundary nodes.
+   */
+  private def buildGlobalIndex(
+    boundaryNodes: Array[GlobalBoundaryNode],
+    dimension: Int,
+    outputPath: String,
+    config: ANNIndexConfig
+  ): String = {
+
+    val globalConfig = HNSWConfig(
+      M = config.M,
+      efConstruction = config.efConstruction,
+      maxElements = boundaryNodes.length * 2
+    )
+
+    val globalIndex = HNSWLibIndex(dimension, globalConfig, config.distanceType)
+
+    // Add boundary nodes to global index
+    // Use sequential IDs for the global index, store mapping separately
+    val vectors = boundaryNodes.zipWithIndex.map { case (node, idx) =>
+      (idx.toLong, node.vector)
+    }
+    globalIndex.addAll(vectors)
+
+    // Save the index
+    val globalIndexPath = s"$outputPath/global/global_routing.hnsw"
+    val globalDir = new File(globalIndexPath).getParentFile
+    if (!globalDir.exists()) {
+      globalDir.mkdirs()
+    }
+    globalIndex.save(globalIndexPath)
+
+    // Save boundary node mapping
+    saveBoundaryNodeMapping(boundaryNodes, outputPath)
+
+    globalIndexPath
+  }
+
+  /**
+   * Save boundary node mapping for reverse lookup.
+   */
+  private def saveBoundaryNodeMapping(
+    boundaryNodes: Array[GlobalBoundaryNode],
+    outputPath: String
+  ): Unit = {
+    val mappingPath = Paths.get(outputPath, "global", "boundary_mapping.meta")
+    Files.createDirectories(mappingPath.getParent)
+
+    val oos = new ObjectOutputStream(Files.newOutputStream(mappingPath))
+    try {
+      // Save as array of (globalIndexId, sourceIndexId, localId)
+      val mapping = boundaryNodes.zipWithIndex.map { case (node, idx) =>
+        (idx, node.indexId, node.localId)
+      }
+      oos.writeObject(mapping)
+    } finally {
+      oos.close()
+    }
+  }
+
+  /**
+   * Save index metadata to disk.
+   */
+  private def saveMetadata(metadata: ANNIndexMetadata, outputPath: String): Unit = {
+    val metadataPath = Paths.get(outputPath, "ann_index.meta")
+    Files.createDirectories(metadataPath.getParent)
+
+    val oos = new ObjectOutputStream(Files.newOutputStream(metadataPath))
+    try {
+      oos.writeObject(metadata)
+    } finally {
+      oos.close()
+    }
+  }
+}
+
+object ANNIndexBuilder {
+
+  /**
+   * Create a new ANNIndexBuilder instance.
+   */
+  def apply(spark: SparkSession): ANNIndexBuilder = {
+    new ANNIndexBuilder(spark)
+  }
+}
