@@ -44,13 +44,6 @@ Spark ANN provides scalable vector search with:
 - sbt 1.9.x
 - Apache Spark 3.5.0 (for running tests)
 
-### macOS Installation
-
-```bash
-brew install openjdk@11
-brew install sbt
-```
-
 ## Quick Start
 
 ### Building an Index
@@ -154,22 +147,105 @@ spark-ann/
 └── native/                            # Native acceleration (Phase 3)
 ```
 
-## Building & Testing
+## Building
 
 ```bash
 # Compile all modules
 sbt compile
 
-# Run all tests
-sbt test
-
-# Run specific module tests
-sbt core/test
-sbt sparkIntegration/test
-sbt apiServer/test
+# Run tests
+sbt test                    # All tests
+sbt core/test               # Core module only
+sbt sparkIntegration/test   # Spark integration only
 
 # Package JAR files
 sbt package
+```
+
+This creates:
+```
+core/target/scala-2.12/spark-ann-core_2.12-0.1.0-SNAPSHOT.jar
+spark-integration/target/scala-2.12/spark-ann-integration_2.12-0.1.0-SNAPSHOT.jar
+```
+
+### Building Fat JARs
+
+Build fat JARs with all dependencies bundled:
+
+```bash
+# Spark integration (for use with spark-submit/spark-shell)
+sbt sparkIntegration/assembly
+# Output: spark-integration/target/scala-2.12/spark-ann-integration-assembly.jar
+
+# API server (standalone executable)
+sbt apiServer/assembly
+# Output: api-server/target/scala-2.12/spark-ann-api-server-assembly.jar
+```
+
+## Using with Spark
+
+### spark-shell
+
+```bash
+# Using fat JAR (recommended)
+spark-shell --jars spark-integration/target/scala-2.12/spark-ann-integration-assembly.jar
+
+# Or using individual JARs
+spark-shell \
+  --jars core/target/scala-2.12/spark-ann-core_2.12-0.1.0-SNAPSHOT.jar,spark-integration/target/scala-2.12/spark-ann-integration_2.12-0.1.0-SNAPSHOT.jar
+```
+
+Then in the shell:
+```scala
+import com.company.ann.spark.api._
+import com.company.ann.spark.api.ANNDataFrameExtensions._
+
+val vectors = Seq(
+  (1L, Seq(0.1f, 0.2f, 0.3f, 0.4f)),
+  (2L, Seq(0.2f, 0.3f, 0.4f, 0.5f))
+).toDF("id", "vector")
+
+// Build index
+val metadata = vectors.buildANNIndex("vector", "/tmp/ann_index")
+
+// Search
+val results = vectors.annSearch("/tmp/ann_index", Array(0.15f, 0.25f, 0.35f, 0.45f), k = 2)
+results.show()
+```
+
+### spark-submit
+
+```bash
+# Using fat JAR
+spark-submit \
+  --class com.company.ann.spark.examples.QuickStart \
+  --master local[4] \
+  spark-integration/target/scala-2.12/spark-ann-integration-assembly.jar
+```
+
+### Cluster Deployment (YARN/Kubernetes)
+
+```bash
+spark-submit \
+  --master yarn \
+  --deploy-mode cluster \
+  --class your.app.MainClass \
+  spark-integration/target/scala-2.12/spark-ann-integration-assembly.jar
+```
+
+### As a Project Dependency
+
+Publish locally first:
+```bash
+sbt publishLocal
+```
+
+Then add to your `build.sbt`:
+```scala
+libraryDependencies ++= Seq(
+  "com.company" %% "spark-ann-core" % "0.1.0-SNAPSHOT",
+  "com.company" %% "spark-ann-integration" % "0.1.0-SNAPSHOT"
+)
 ```
 
 ## DataFrame API Reference
@@ -254,10 +330,14 @@ val metadata = ANNIndexAPI.buildIndexFromFileGroups(
 ### Starting the Server
 
 ```bash
+# Using sbt
 sbt apiServer/run
 
+# Using fat JAR
+java -jar api-server/target/scala-2.12/spark-ann-api-server-assembly.jar
+
 # With custom port
-ANN_SERVER_PORT=9090 sbt apiServer/run
+ANN_SERVER_PORT=9090 java -jar api-server/target/scala-2.12/spark-ann-api-server-assembly.jar
 ```
 
 The server starts at `http://localhost:8080` by default.

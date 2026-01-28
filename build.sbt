@@ -20,6 +20,19 @@ lazy val commonSettings = Seq(
   Test / parallelExecution := false
 )
 
+// Assembly settings for fat JAR
+lazy val assemblySettings = Seq(
+  assembly / assemblyMergeStrategy := {
+    case PathList("META-INF", "services", xs @ _*) => MergeStrategy.concat
+    case PathList("META-INF", xs @ _*)             => MergeStrategy.discard
+    case "reference.conf"                          => MergeStrategy.concat
+    case x if x.endsWith(".proto")                 => MergeStrategy.first
+    case x if x.endsWith(".class")                 => MergeStrategy.first
+    case x                                         => MergeStrategy.first
+  },
+  assembly / assemblyOption := (assembly / assemblyOption).value.withIncludeScala(false)
+)
+
 lazy val root = (project in file("."))
   .aggregate(core, sparkIntegration, sparkSqlExtension, apiServer)
   .settings(
@@ -41,6 +54,7 @@ lazy val core = (project in file("core"))
 lazy val sparkIntegration = (project in file("spark-integration"))
   .dependsOn(core)
   .settings(commonSettings)
+  .settings(assemblySettings)
   .settings(
     name := "spark-ann-integration",
     libraryDependencies ++= Seq(
@@ -50,7 +64,8 @@ lazy val sparkIntegration = (project in file("spark-integration"))
       "org.apache.spark" %% "spark-sql" % sparkVersion % Test,
       "org.apache.spark" %% "spark-core" % sparkVersion % Test,
       "org.json4s" %% "json4s-jackson" % json4sVersion % Test
-    )
+    ),
+    assembly / assemblyJarName := "spark-ann-integration-assembly.jar"
   )
 
 lazy val sparkSqlExtension = (project in file("spark-sql-extension"))
@@ -68,6 +83,7 @@ lazy val sparkSqlExtension = (project in file("spark-sql-extension"))
 lazy val apiServer = (project in file("api-server"))
   .dependsOn(core)
   .settings(commonSettings)
+  .settings(assemblySettings)
   .settings(
     name := "spark-ann-api-server",
     libraryDependencies ++= Seq(
@@ -79,5 +95,7 @@ lazy val apiServer = (project in file("api-server"))
       "org.scalatest" %% "scalatest" % scalatestVersion % Test,
       "com.typesafe.akka" %% "akka-actor-testkit-typed" % akkaVersion % Test,
       "com.typesafe.akka" %% "akka-http-testkit" % akkaHttpVersion % Test
-    )
+    ),
+    assembly / assemblyJarName := "spark-ann-api-server-assembly.jar",
+    assembly / mainClass := Some("com.company.ann.server.AnnApiServer")
   )
