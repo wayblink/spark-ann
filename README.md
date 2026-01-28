@@ -537,21 +537,23 @@ See [web-ui/README.md](web-ui/README.md) for detailed documentation.
 
 ## OpenAPI Documentation
 
-The API server provides OpenAPI/Swagger documentation.
+The API server provides OpenAPI/Swagger documentation with an interactive UI.
 
 ### Accessing API Docs
 
 Once the server is running:
 - **Swagger UI**: http://localhost:8080/api/v1/swagger
-- **OpenAPI JSON**: http://localhost:8080/api/v1/api-docs/swagger.json
+- **OpenAPI JSON**: http://localhost:8080/api-docs/swagger.json
+
+The Swagger UI provides an interactive interface to explore and test all API endpoints.
 
 ### API Categories
 
 | Tag | Description |
 |-----|-------------|
 | Health | Service health and readiness endpoints |
-| Index | Index management operations |
-| Search | Vector search operations |
+| Index | Index management operations (create, load, save, delete) |
+| Search | Vector search operations (single, multi-index, batch) |
 
 ## Benchmarks
 

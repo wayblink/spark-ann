@@ -24,6 +24,7 @@ lazy val commonSettings = Seq(
 lazy val assemblyMergeSettings = Seq(
   assembly / assemblyMergeStrategy := {
     case PathList("META-INF", "services", xs @ _*) => MergeStrategy.concat
+    case PathList("META-INF", "resources", xs @ _*) => MergeStrategy.first  // Keep webjar resources
     case PathList("META-INF", xs @ _*)             => MergeStrategy.discard
     case "reference.conf"                          => MergeStrategy.concat
     case x if x.endsWith(".proto")                 => MergeStrategy.first
@@ -105,6 +106,7 @@ lazy val apiServer = (project in file("api-server"))
       "com.github.swagger-akka-http" %% "swagger-akka-http" % "2.6.0",
       "com.github.swagger-akka-http" %% "swagger-scala-module" % "2.6.0",
       "jakarta.ws.rs" % "jakarta.ws.rs-api" % "3.1.0",
+      "org.webjars" % "swagger-ui" % "5.9.0",
       // Test
       "org.scalatest" %% "scalatest" % scalatestVersion % Test,
       "com.typesafe.akka" %% "akka-actor-testkit-typed" % akkaVersion % Test,
