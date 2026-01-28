@@ -68,8 +68,8 @@ class ApiRoutes(
             indexRoutes.routes
           )
         },
-        // Swagger documentation
-        SwaggerDocService.routes
+        // Swagger documentation and UI
+        SwaggerDocService.swaggerRoutes
       )
     }
   }
