@@ -20,8 +20,8 @@ lazy val commonSettings = Seq(
   Test / parallelExecution := false
 )
 
-// Assembly settings for fat JAR
-lazy val assemblySettings = Seq(
+// Assembly merge strategy (shared)
+lazy val assemblyMergeSettings = Seq(
   assembly / assemblyMergeStrategy := {
     case PathList("META-INF", "services", xs @ _*) => MergeStrategy.concat
     case PathList("META-INF", xs @ _*)             => MergeStrategy.discard
@@ -29,8 +29,17 @@ lazy val assemblySettings = Seq(
     case x if x.endsWith(".proto")                 => MergeStrategy.first
     case x if x.endsWith(".class")                 => MergeStrategy.first
     case x                                         => MergeStrategy.first
-  },
+  }
+)
+
+// Assembly settings for Spark (excludes Scala - provided by Spark runtime)
+lazy val sparkAssemblySettings = assemblyMergeSettings ++ Seq(
   assembly / assemblyOption := (assembly / assemblyOption).value.withIncludeScala(false)
+)
+
+// Assembly settings for standalone server (includes Scala)
+lazy val standaloneAssemblySettings = assemblyMergeSettings ++ Seq(
+  assembly / assemblyOption := (assembly / assemblyOption).value.withIncludeScala(true)
 )
 
 lazy val root = (project in file("."))
@@ -54,7 +63,7 @@ lazy val core = (project in file("core"))
 lazy val sparkIntegration = (project in file("spark-integration"))
   .dependsOn(core)
   .settings(commonSettings)
-  .settings(assemblySettings)
+  .settings(sparkAssemblySettings)
   .settings(
     name := "spark-ann-integration",
     libraryDependencies ++= Seq(
@@ -83,7 +92,7 @@ lazy val sparkSqlExtension = (project in file("spark-sql-extension"))
 lazy val apiServer = (project in file("api-server"))
   .dependsOn(core)
   .settings(commonSettings)
-  .settings(assemblySettings)
+  .settings(standaloneAssemblySettings)
   .settings(
     name := "spark-ann-api-server",
     libraryDependencies ++= Seq(

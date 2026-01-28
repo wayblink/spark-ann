@@ -8,6 +8,8 @@ Spark ANN provides scalable vector search with:
 - **Hierarchical HNSW Indexing**: Local indexes + global routing for distributed search
 - **DataFrame API**: Native Spark integration with implicit extensions
 - **REST API Server**: Production-ready HTTP endpoints for index management and search
+- **Web UI**: React-based dashboard for index management and search operations
+- **Docker Support**: Ready-to-use containerized deployment
 - **File-Based Building**: Efficiently handles large datasets across distributed file systems
 
 ### Architecture
@@ -40,9 +42,15 @@ Spark ANN provides scalable vector search with:
 
 ## Prerequisites
 
-- Java 8 or 11 (JDK)
+### For Development
+- Java 11 or 17 (JDK)
 - sbt 1.9.x
 - Apache Spark 3.5.0 (for running tests)
+- Node.js 20+ (for Web UI development)
+
+### For Docker Deployment
+- Docker 20.10+
+- Docker Compose v2+
 
 ## Quick Start
 
@@ -113,6 +121,7 @@ val batchResults = ANNIndexAPI.batchSearch(
 ```
 spark-ann/
 ├── build.sbt                          # Build configuration
+├── docker-compose.yml                 # Docker orchestration
 ├── core/                              # Core algorithms (no Spark dependency)
 │   └── src/main/scala/
 │       └── com/company/ann/core/
@@ -137,12 +146,21 @@ spark-ann/
 │           └── examples/              # Example code
 │               └── QuickStart.scala
 ├── api-server/                        # REST API server
+│   ├── Dockerfile                     # Docker build for API server
 │   └── src/main/scala/
-│       └── com/company/ann/server/
+│       └── com/company/ann/api/
 │           ├── AnnApiServer.scala     # Main entry point
 │           ├── model/                 # Request/response DTOs
 │           ├── routes/                # HTTP route handlers
-│           └── service/               # Business logic
+│           └── service/               # Business logic & Swagger
+├── web-ui/                            # React Web UI
+│   ├── Dockerfile                     # Docker build for UI
+│   ├── nginx.conf                     # Nginx config for SPA + API proxy
+│   └── src/
+│       ├── api/                       # API client & React Query hooks
+│       ├── components/                # React components
+│       ├── pages/                     # Page components
+│       └── types/                     # TypeScript types
 ├── spark-sql-extension/               # SQL extension (Phase 2)
 └── native/                            # Native acceleration (Phase 3)
 ```
@@ -414,6 +432,127 @@ curl -X POST http://localhost:8080/api/v1/search/batch \
   }'
 ```
 
+## Docker Deployment
+
+The project includes Docker support for easy deployment of both the API server and Web UI.
+
+### Quick Start with Docker Compose
+
+```bash
+# Build and start all services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop services
+docker-compose down
+```
+
+This starts:
+- **API Server**: http://localhost:8080
+- **Web UI**: http://localhost:80
+
+### Services
+
+| Service | Port | Description |
+|---------|------|-------------|
+| `api-server` | 8080 | REST API server for vector search operations |
+| `web-ui` | 80 | React-based web dashboard |
+
+### Building Individual Images
+
+```bash
+# Build API server image
+docker build -t spark-ann-api-server -f api-server/Dockerfile .
+
+# Build Web UI image
+docker build -t spark-ann-web-ui ./web-ui
+```
+
+### Running API Server Standalone
+
+```bash
+docker run -d \
+  --name spark-ann-api \
+  -p 8080:8080 \
+  -v index-data:/data/indexes \
+  -e JAVA_OPTS="-Xmx2g -Xms512m" \
+  spark-ann-api-server
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JAVA_OPTS` | `-Xmx2g -Xms512m` | JVM options |
+| `ANN_HOST` | `0.0.0.0` | API server bind host |
+| `ANN_PORT` | `8080` | API server bind port |
+
+### Persistent Storage
+
+The `index-data` volume stores index files. Mount a host directory for persistence:
+
+```bash
+docker run -d \
+  -v /path/to/indexes:/data/indexes \
+  spark-ann-api-server
+```
+
+## Web UI
+
+A React-based web interface for managing indexes and performing searches.
+
+### Features
+
+- **Dashboard**: Overview of loaded indexes and system health
+- **Index Management**: Create, load, delete, and inspect indexes
+- **Search Interface**: Single, multi-index, and batch search operations
+- **Theme Support**: Light and dark mode
+
+### Development
+
+```bash
+cd web-ui
+
+# Install dependencies
+npm install
+
+# Start development server (connects to API at localhost:8080)
+npm run dev
+
+# Build for production
+npm run build
+```
+
+### Tech Stack
+
+- React 18 + TypeScript
+- Vite (build tool)
+- Tailwind CSS + shadcn/ui (styling)
+- TanStack Query (API state management)
+- React Router v6 (routing)
+
+See [web-ui/README.md](web-ui/README.md) for detailed documentation.
+
+## OpenAPI Documentation
+
+The API server provides OpenAPI/Swagger documentation.
+
+### Accessing API Docs
+
+Once the server is running:
+- **Swagger UI**: http://localhost:8080/api/v1/swagger
+- **OpenAPI JSON**: http://localhost:8080/api/v1/api-docs/swagger.json
+
+### API Categories
+
+| Tag | Description |
+|-----|-------------|
+| Health | Service health and readiness endpoints |
+| Index | Index management operations |
+| Search | Vector search operations |
+
 ## Benchmarks
 
 ### SIFT Datasets
@@ -479,9 +618,26 @@ SKIP_BENCHMARK=true sbt "core/test"
 - [x] Single/multi-index search
 - [x] Batch search
 - [x] Index management (create, load, unload, save)
+- [x] OpenAPI/Swagger documentation
 - [ ] Prometheus metrics
 - [ ] API key authentication
 - [ ] TLS/HTTPS support
+
+### Web UI (Complete)
+- [x] Dashboard with health stats and index overview
+- [x] Index management (create, load, delete, inspect)
+- [x] Single index search
+- [x] Multi-index search with result merging
+- [x] Batch search
+- [x] Demo data generation for testing
+- [x] Light/dark theme support
+
+### Docker Support (Complete)
+- [x] API server Dockerfile (multi-stage build)
+- [x] Web UI Dockerfile (nginx + SPA)
+- [x] Docker Compose orchestration
+- [x] Health checks and service dependencies
+- [x] Persistent volume for index storage
 
 ### Phase 2: SQL Extension (Planned)
 - [ ] Custom optimizer rules

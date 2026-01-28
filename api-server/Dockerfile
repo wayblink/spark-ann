@@ -2,7 +2,7 @@
 # Multi-stage build for smaller final image
 
 # Stage 1: Build
-FROM sbtscala/scala-sbt:eclipse-temurin-jammy-11.0.22_7_1.9.8_2.12.18 AS builder
+FROM sbtscala/scala-sbt:eclipse-temurin-17.0.15_6_1.12.1_2.12.21 AS builder
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ COPY api-server/ api-server/
 RUN sbt apiServer/assembly
 
 # Stage 2: Runtime
-FROM eclipse-temurin:11-jre-jammy
+FROM eclipse-temurin:17-jre-jammy
 
 LABEL maintainer="Spark-ANN Team"
 LABEL description="Spark-ANN API Server - Vector similarity search"
