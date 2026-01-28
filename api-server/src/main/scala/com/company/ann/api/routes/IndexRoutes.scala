@@ -8,12 +8,21 @@ import com.company.ann.api.model._
 import com.company.ann.api.model.ApiJsonProtocol._
 import com.company.ann.api.service.{IndexManager, LoadedIndexInfo}
 import com.company.ann.core.index.HNSWConfig
+import io.swagger.v3.oas.annotations.{Operation, Parameter}
+import io.swagger.v3.oas.annotations.enums.ParameterIn
+import io.swagger.v3.oas.annotations.media.{Content, Schema}
+import io.swagger.v3.oas.annotations.parameters.RequestBody
+import io.swagger.v3.oas.annotations.responses.ApiResponse
+import io.swagger.v3.oas.annotations.tags.Tag
+import jakarta.ws.rs.{DELETE, GET, POST, Path}
 
 /**
  * HTTP routes for index management operations.
  *
  * @param indexManager The index manager for index operations
  */
+@Path("/indexes")
+@Tag(name = "Indexes", description = "Index management operations")
 class IndexRoutes(indexManager: IndexManager) {
 
   val routes: Route = pathPrefix("indexes") {
@@ -130,6 +139,159 @@ class IndexRoutes(indexManager: IndexManager) {
       }
     )
   }
+
+  @GET
+  @Operation(
+    summary = "List all indexes",
+    description = "Returns a list of all loaded indexes with their metadata",
+    responses = Array(
+      new ApiResponse(
+        responseCode = "200",
+        description = "List of indexes",
+        content = Array(new Content(schema = new Schema(implementation = classOf[IndexListResponse])))
+      )
+    )
+  )
+  def listIndexes(): Unit = {}
+
+  @POST
+  @Operation(
+    summary = "Create or load an index",
+    description = "Create a new index from vectors or load an existing index from disk. Include 'indexPath' to load from disk, or 'vectors' to create from data.",
+    requestBody = new RequestBody(
+      description = "Index creation or load parameters",
+      required = true,
+      content = Array(new Content(schema = new Schema(implementation = classOf[CreateIndexRequest])))
+    ),
+    responses = Array(
+      new ApiResponse(
+        responseCode = "201",
+        description = "Index created/loaded successfully",
+        content = Array(new Content(schema = new Schema(implementation = classOf[IndexOperationResponse])))
+      ),
+      new ApiResponse(responseCode = "400", description = "Invalid request"),
+      new ApiResponse(responseCode = "409", description = "Index already exists")
+    )
+  )
+  def createIndex(): Unit = {}
+
+  @GET
+  @Path("/{indexId}")
+  @Operation(
+    summary = "Get index details",
+    description = "Returns detailed information about a specific index",
+    parameters = Array(
+      new Parameter(
+        name = "indexId",
+        in = ParameterIn.PATH,
+        description = "Index identifier",
+        required = true,
+        schema = new Schema(implementation = classOf[String])
+      )
+    ),
+    responses = Array(
+      new ApiResponse(
+        responseCode = "200",
+        description = "Index details",
+        content = Array(new Content(schema = new Schema(implementation = classOf[IndexInfo])))
+      ),
+      new ApiResponse(responseCode = "404", description = "Index not found")
+    )
+  )
+  def getIndex(): Unit = {}
+
+  @DELETE
+  @Path("/{indexId}")
+  @Operation(
+    summary = "Delete/unload an index",
+    description = "Unload an index from memory. Use deleteFile=true to also delete from disk.",
+    parameters = Array(
+      new Parameter(
+        name = "indexId",
+        in = ParameterIn.PATH,
+        description = "Index identifier",
+        required = true,
+        schema = new Schema(implementation = classOf[String])
+      ),
+      new Parameter(
+        name = "deleteFile",
+        in = ParameterIn.QUERY,
+        description = "Also delete the index file from disk",
+        required = false,
+        schema = new Schema(implementation = classOf[Boolean], defaultValue = "false")
+      )
+    ),
+    responses = Array(
+      new ApiResponse(
+        responseCode = "200",
+        description = "Index unloaded",
+        content = Array(new Content(schema = new Schema(implementation = classOf[IndexOperationResponse])))
+      ),
+      new ApiResponse(responseCode = "404", description = "Index not found")
+    )
+  )
+  def deleteIndex(): Unit = {}
+
+  @POST
+  @Path("/{indexId}/vectors")
+  @Operation(
+    summary = "Add vectors to an index",
+    description = "Add new vectors to an existing index",
+    parameters = Array(
+      new Parameter(
+        name = "indexId",
+        in = ParameterIn.PATH,
+        description = "Index identifier",
+        required = true,
+        schema = new Schema(implementation = classOf[String])
+      )
+    ),
+    requestBody = new RequestBody(
+      description = "Vectors to add",
+      required = true,
+      content = Array(new Content(schema = new Schema(implementation = classOf[AddVectorsRequest])))
+    ),
+    responses = Array(
+      new ApiResponse(
+        responseCode = "200",
+        description = "Vectors added",
+        content = Array(new Content(schema = new Schema(implementation = classOf[IndexOperationResponse])))
+      ),
+      new ApiResponse(responseCode = "404", description = "Index not found"),
+      new ApiResponse(responseCode = "422", description = "Dimension mismatch")
+    )
+  )
+  def addVectors(): Unit = {}
+
+  @POST
+  @Path("/{indexId}/save")
+  @Operation(
+    summary = "Save index to disk",
+    description = "Persist an in-memory index to disk",
+    parameters = Array(
+      new Parameter(
+        name = "indexId",
+        in = ParameterIn.PATH,
+        description = "Index identifier",
+        required = true,
+        schema = new Schema(implementation = classOf[String])
+      )
+    ),
+    requestBody = new RequestBody(
+      description = "Save destination",
+      required = true,
+      content = Array(new Content(schema = new Schema(implementation = classOf[SaveIndexRequest])))
+    ),
+    responses = Array(
+      new ApiResponse(
+        responseCode = "200",
+        description = "Index saved",
+        content = Array(new Content(schema = new Schema(implementation = classOf[IndexOperationResponse])))
+      ),
+      new ApiResponse(responseCode = "404", description = "Index not found")
+    )
+  )
+  def saveIndex(): Unit = {}
 
   /**
    * Handle loading an index from disk.

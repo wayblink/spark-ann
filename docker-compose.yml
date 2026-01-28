@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  # API Server
+  api-server:
+    build:
+      context: .
+      dockerfile: api-server/Dockerfile
+    container_name: spark-ann-api
+    ports:
+      - "8080:8080"
+    volumes:
+      - index-data:/data/indexes
+    environment:
+      - JAVA_OPTS=-Xmx2g -Xms512m
+      - ANN_HOST=0.0.0.0
+      - ANN_PORT=8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - spark-ann-network
+
+  # Web UI
+  web-ui:
+    build:
+      context: ./web-ui
+      dockerfile: Dockerfile
+    container_name: spark-ann-ui
+    ports:
+      - "80:80"
+    depends_on:
+      api-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - spark-ann-network
+
+volumes:
+  index-data:
+    driver: local
+
+networks:
+  spark-ann-network:
+    driver: bridge

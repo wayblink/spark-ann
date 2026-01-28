@@ -7,6 +7,7 @@ import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
 import com.company.ann.api.model.{ApiJsonProtocol, ErrorResponse}
 import com.company.ann.api.model.ApiJsonProtocol._
 import com.company.ann.api.service.{IndexManager, SearchService}
+import com.company.ann.api.swagger.SwaggerDocService
 
 /**
  * Main API routes combining all endpoint groups.
@@ -54,17 +55,22 @@ class ApiRoutes(
     .result()
 
   /**
-   * All API routes under /api/v1 prefix.
+   * All API routes under /api/v1 prefix, plus Swagger documentation.
    */
   val routes: Route = handleExceptions(exceptionHandler) {
     handleRejections(rejectionHandler) {
-      pathPrefix("api" / "v1") {
-        concat(
-          healthRoutes.routes,
-          searchRoutes.routes,
-          indexRoutes.routes
-        )
-      }
+      concat(
+        // API routes
+        pathPrefix("api" / "v1") {
+          concat(
+            healthRoutes.routes,
+            searchRoutes.routes,
+            indexRoutes.routes
+          )
+        },
+        // Swagger documentation
+        SwaggerDocService.routes
+      )
     }
   }
 }

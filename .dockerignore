@@ -1,0 +1,26 @@
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Build outputs
+*/target/
+web-ui/node_modules/
+web-ui/dist/
+
+# Datasets (too large for Docker context)
+datasets/
+
+# Logs
+*.log
+
+# Documentation
+docs/
+*.md
+
+# Local config
+.env*

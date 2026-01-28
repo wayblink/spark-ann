@@ -7,6 +7,13 @@ import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
 import com.company.ann.api.model._
 import com.company.ann.api.model.ApiJsonProtocol._
 import com.company.ann.api.service.{SearchService, IndexManager}
+import io.swagger.v3.oas.annotations.{Operation, Parameter}
+import io.swagger.v3.oas.annotations.enums.ParameterIn
+import io.swagger.v3.oas.annotations.media.{Content, Schema}
+import io.swagger.v3.oas.annotations.parameters.RequestBody
+import io.swagger.v3.oas.annotations.responses.ApiResponse
+import io.swagger.v3.oas.annotations.tags.Tag
+import jakarta.ws.rs.{POST, Path}
 
 /**
  * HTTP routes for search operations.
@@ -14,6 +21,8 @@ import com.company.ann.api.service.{SearchService, IndexManager}
  * @param searchService The search service for executing queries
  * @param indexManager  The index manager for validation
  */
+@Path("/")
+@Tag(name = "Search", description = "Vector similarity search operations")
 class SearchRoutes(searchService: SearchService, indexManager: IndexManager) {
 
   val routes: Route = concat(
@@ -101,6 +110,81 @@ class SearchRoutes(searchService: SearchService, indexManager: IndexManager) {
       }
     }
   )
+
+  @POST
+  @Path("/indexes/{indexId}/search")
+  @Operation(
+    summary = "Search a single index",
+    description = "Find k nearest neighbors in the specified index",
+    parameters = Array(
+      new Parameter(
+        name = "indexId",
+        in = ParameterIn.PATH,
+        description = "ID of the index to search",
+        required = true,
+        schema = new Schema(implementation = classOf[String])
+      )
+    ),
+    requestBody = new RequestBody(
+      description = "Search parameters",
+      required = true,
+      content = Array(new Content(schema = new Schema(implementation = classOf[SearchRequest])))
+    ),
+    responses = Array(
+      new ApiResponse(
+        responseCode = "200",
+        description = "Search results",
+        content = Array(new Content(schema = new Schema(implementation = classOf[SearchResponse])))
+      ),
+      new ApiResponse(responseCode = "404", description = "Index not found"),
+      new ApiResponse(responseCode = "422", description = "Dimension mismatch")
+    )
+  )
+  def searchIndex(): Unit = {}
+
+  @POST
+  @Path("/search")
+  @Operation(
+    summary = "Multi-index search",
+    description = "Search across multiple indexes and merge results",
+    requestBody = new RequestBody(
+      description = "Multi-search parameters",
+      required = true,
+      content = Array(new Content(schema = new Schema(implementation = classOf[MultiSearchRequest])))
+    ),
+    responses = Array(
+      new ApiResponse(
+        responseCode = "200",
+        description = "Merged search results",
+        content = Array(new Content(schema = new Schema(implementation = classOf[MultiSearchResponse])))
+      ),
+      new ApiResponse(responseCode = "400", description = "No indexes available"),
+      new ApiResponse(responseCode = "404", description = "Index not found")
+    )
+  )
+  def multiSearch(): Unit = {}
+
+  @POST
+  @Path("/search/batch")
+  @Operation(
+    summary = "Batch search",
+    description = "Execute multiple search queries against a single index",
+    requestBody = new RequestBody(
+      description = "Batch search parameters",
+      required = true,
+      content = Array(new Content(schema = new Schema(implementation = classOf[BatchSearchRequest])))
+    ),
+    responses = Array(
+      new ApiResponse(
+        responseCode = "200",
+        description = "Batch search results",
+        content = Array(new Content(schema = new Schema(implementation = classOf[BatchSearchResponse])))
+      ),
+      new ApiResponse(responseCode = "400", description = "Empty queries"),
+      new ApiResponse(responseCode = "404", description = "Index not found")
+    )
+  )
+  def batchSearch(): Unit = {}
 
   /**
    * Validate basic search request parameters.

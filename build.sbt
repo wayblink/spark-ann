@@ -92,10 +92,15 @@ lazy val apiServer = (project in file("api-server"))
       "com.typesafe.akka" %% "akka-http" % akkaHttpVersion,
       "com.typesafe.akka" %% "akka-http-spray-json" % akkaHttpVersion,
       "ch.qos.logback" % "logback-classic" % "1.2.11",
+      // Swagger/OpenAPI
+      "com.github.swagger-akka-http" %% "swagger-akka-http" % "2.6.0",
+      "com.github.swagger-akka-http" %% "swagger-scala-module" % "2.6.0",
+      "jakarta.ws.rs" % "jakarta.ws.rs-api" % "3.1.0",
+      // Test
       "org.scalatest" %% "scalatest" % scalatestVersion % Test,
       "com.typesafe.akka" %% "akka-actor-testkit-typed" % akkaVersion % Test,
       "com.typesafe.akka" %% "akka-http-testkit" % akkaHttpVersion % Test
     ),
     assembly / assemblyJarName := "spark-ann-api-server-assembly.jar",
-    assembly / mainClass := Some("com.company.ann.server.AnnApiServer")
+    assembly / mainClass := Some("com.company.ann.api.AnnApiServer")
   )

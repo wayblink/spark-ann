@@ -6,6 +6,11 @@ import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
 import com.company.ann.api.model._
 import com.company.ann.api.model.ApiJsonProtocol._
 import com.company.ann.api.service.IndexManager
+import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.media.{Content, Schema}
+import io.swagger.v3.oas.annotations.responses.ApiResponse
+import io.swagger.v3.oas.annotations.tags.Tag
+import jakarta.ws.rs.{GET, Path}
 
 /**
  * HTTP routes for health and status endpoints.
@@ -13,34 +18,83 @@ import com.company.ann.api.service.IndexManager
  * @param indexManager The index manager for status information
  * @param version      API version string
  */
+@Path("/health")
+@Tag(name = "Health", description = "Service health and status endpoints")
 class HealthRoutes(indexManager: IndexManager, version: String = "1.0.0") {
 
   val routes: Route = pathPrefix("health") {
     concat(
-      // GET /health - Full health check with statistics
       pathEnd {
         get {
-          complete(HealthResponse(
-            status = "healthy",
-            version = version,
-            indexCount = indexManager.indexCount,
-            totalVectors = indexManager.totalVectors
-          ))
+          complete(getHealth())
         }
       },
-      // GET /health/ready - Readiness probe
       path("ready") {
         get {
-          complete(ReadinessResponse(ready = true))
+          complete(getReady())
         }
       },
-      // GET /health/live - Liveness probe
       path("live") {
         get {
-          complete(LivenessResponse(alive = true))
+          complete(getLive())
         }
       }
     )
+  }
+
+  @GET
+  @Operation(
+    summary = "Get service health status",
+    description = "Returns full health status including version and statistics",
+    responses = Array(
+      new ApiResponse(
+        responseCode = "200",
+        description = "Service health status",
+        content = Array(new Content(schema = new Schema(implementation = classOf[HealthResponse])))
+      )
+    )
+  )
+  def getHealth(): HealthResponse = {
+    HealthResponse(
+      status = "healthy",
+      version = version,
+      indexCount = indexManager.indexCount,
+      totalVectors = indexManager.totalVectors
+    )
+  }
+
+  @GET
+  @Path("/ready")
+  @Operation(
+    summary = "Readiness probe",
+    description = "Kubernetes readiness probe endpoint",
+    responses = Array(
+      new ApiResponse(
+        responseCode = "200",
+        description = "Service is ready",
+        content = Array(new Content(schema = new Schema(implementation = classOf[ReadinessResponse])))
+      )
+    )
+  )
+  def getReady(): ReadinessResponse = {
+    ReadinessResponse(ready = true)
+  }
+
+  @GET
+  @Path("/live")
+  @Operation(
+    summary = "Liveness probe",
+    description = "Kubernetes liveness probe endpoint",
+    responses = Array(
+      new ApiResponse(
+        responseCode = "200",
+        description = "Service is alive",
+        content = Array(new Content(schema = new Schema(implementation = classOf[LivenessResponse])))
+      )
+    )
+  )
+  def getLive(): LivenessResponse = {
+    LivenessResponse(alive = true)
   }
 }
 
