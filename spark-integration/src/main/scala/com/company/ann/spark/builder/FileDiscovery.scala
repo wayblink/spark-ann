@@ -1,6 +1,9 @@
 package com.company.ann.spark.builder
 
+import com.company.ann.spark.util.SerializableConfiguration
 import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.sql.SparkSession
 
 /**
@@ -46,26 +49,40 @@ object FileDiscovery {
       throw new IllegalArgumentException(s"No Parquet files found in path: $dataPath")
     }
 
-    // Get vector count for each file
-    // Note: Using sequential processing for better Spark resource management
-    // Each file read already leverages Spark's parallelism
-    parquetFiles.map { filePath =>
-      val df = spark.read.parquet(filePath.toString)
+    // Get vector count for each file using parallel Parquet footer reading.
+    // Row counts are stored in Parquet file footers, so no data is scanned.
+    val pathStrings = parquetFiles.map(_.toString)
+    val bcConf = spark.sparkContext.broadcast(
+      new SerializableConfiguration(hadoopConf)
+    )
+    val bcVectorColumn = spark.sparkContext.broadcast(vectorColumn)
 
-      // Validate that the vector column exists
-      if (!df.columns.contains(vectorColumn)) {
-        throw new IllegalArgumentException(
-          s"Vector column '$vectorColumn' not found in file: $filePath. " +
-            s"Available columns: ${df.columns.mkString(", ")}"
+    val fileInfoRDD = spark.sparkContext.parallelize(pathStrings.toSeq).map { pathStr =>
+      val conf = bcConf.value.value
+      val path = new Path(pathStr)
+      val inputFile = HadoopInputFile.fromPath(path, conf)
+      val reader = ParquetFileReader.open(inputFile)
+      try {
+        val numRows = reader.getRecordCount
+        // Validate that the vector column exists in the schema
+        val schema = reader.getFooter.getFileMetaData.getSchema
+        val columnName = bcVectorColumn.value
+        if (!schema.containsField(columnName)) {
+          throw new IllegalArgumentException(
+            s"Vector column '$columnName' not found in file: $pathStr. " +
+              s"Available columns: ${schema.getFields.toString}"
+          )
+        }
+        DataFileInfo(
+          filePath = pathStr,
+          numVectors = numRows
         )
+      } finally {
+        reader.close()
       }
-
-      val numVectors = df.count()
-      DataFileInfo(
-        filePath = filePath.toString,
-        numVectors = numVectors
-      )
     }
+
+    fileInfoRDD.collect()
   }
 
   /**

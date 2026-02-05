@@ -109,11 +109,11 @@ class FileDiscoveryTest extends AnyFunSuite with SharedSparkSession {
 
     createTextData(spark, s"$testPath/data.parquet", 5)
 
-    val exception = intercept[IllegalArgumentException] {
+    val exception = intercept[org.apache.spark.SparkException] {
       FileDiscovery.discoverDataFiles(spark, testPath, "vector")
     }
 
-    assert(exception.getMessage.contains("Vector column 'vector' not found"))
+    assert(exception.getCause.getMessage.contains("Vector column 'vector' not found"))
   }
 
   test("throw exception for empty directory") {
