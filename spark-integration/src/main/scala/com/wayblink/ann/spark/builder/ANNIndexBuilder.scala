@@ -3,6 +3,7 @@ package com.wayblink.ann.spark.builder
 import com.wayblink.ann.core.index.{HNSWConfig, HNSWLibIndex}
 import com.wayblink.ann.spark.api.{ANNIndexConfig, ANNIndexMetadata, ANNIndexStatistics}
 import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.slf4j.LoggerFactory
 
 import java.io.File
 import java.nio.file.Paths
@@ -30,6 +31,8 @@ case class GlobalBoundaryNode(
  */
 class ANNIndexBuilder(spark: SparkSession) {
 
+  private val log = LoggerFactory.getLogger(classOf[ANNIndexBuilder])
+
   /**
    * Build a complete ANN index from a DataFrame.
    *
@@ -49,22 +52,22 @@ class ANNIndexBuilder(spark: SparkSession) {
 
     // Step 1: Write DataFrame to temporary parquet files if not already on disk
     val dataPath = s"$outputPath/data"
-    println(s"Saving data to $dataPath...")
+    log.info("Saving data to {}", dataPath)
     df.write.mode("overwrite").parquet(dataPath)
 
     // Step 2: Discover data files (parallelized via footer reading)
-    println("Discovering data files...")
+    log.info("Discovering data files")
     val dataFiles = FileDiscovery.discoverDataFiles(spark, dataPath, vectorColumn)
-    println(s"Found ${dataFiles.length} data files")
+    log.info("Found {} data files", dataFiles.length)
 
     // Step 3: Group files according to strategy
-    println(s"Grouping files using ${config.groupingStrategy} strategy...")
+    log.info("Grouping files using {} strategy", config.groupingStrategy)
     val fileGroups = FileGroupingStrategy.groupFiles(
       dataFiles,
       config.groupingStrategy,
       config.targetVectorsPerIndex
     )
-    println(s"Created ${fileGroups.length} file groups")
+    log.info("Created {} file groups", fileGroups.length)
 
     // Build from file groups
     buildFromFileGroups(fileGroups, vectorColumn, outputPath, config, startTime)
@@ -88,7 +91,7 @@ class ANNIndexBuilder(spark: SparkSession) {
   ): ANNIndexMetadata = {
 
     // Step 1: Build local indexes and co-collect boundary nodes in a single distributed pass
-    println("Building local indexes (distributed)...")
+    log.info("Building local indexes (distributed)")
     val hnswConfig = config.toHNSWConfig()
     val buildResults = LocalIndexBuilder.buildFromFileGroupsWithBoundaryNodes(
       spark,
@@ -108,16 +111,19 @@ class ANNIndexBuilder(spark: SparkSession) {
     }
 
     val dimension = localMetadata.head.dimension
-    println(s"Built ${localMetadata.length} local indexes, collected ${boundaryNodes.length} boundary nodes")
+    log.info(
+      "Built {} local indexes, collected {} boundary nodes",
+      localMetadata.length, boundaryNodes.length
+    )
 
     // Step 2: Build global routing index (on driver — boundary nodes are small)
     val globalIndexPath = if (boundaryNodes.nonEmpty && localMetadata.length > 1) {
-      println("Building global routing index...")
+      log.info("Building global routing index")
       val globalPath = buildGlobalIndex(boundaryNodes, dimension, outputPath, config)
-      println(s"Global index built at $globalPath")
+      log.info("Global index built at {}", globalPath)
       Some(globalPath)
     } else {
-      println("Skipping global index (single local index or no boundary nodes)")
+      log.info("Skipping global index (single local index or no boundary nodes)")
       None
     }
 
@@ -145,8 +151,8 @@ class ANNIndexBuilder(spark: SparkSession) {
 
     saveMetadata(metadata, outputPath)
 
-    println(s"ANN index built successfully in ${buildTimeMs}ms")
-    println(statistics)
+    log.info("ANN index built successfully in {}ms", buildTimeMs)
+    log.info("{}", statistics)
 
     metadata
   }

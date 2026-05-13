@@ -29,10 +29,12 @@ class SiftBenchmarkTest extends AnyFunSuite with BeforeAndAfterAll {
   private var dataset: SiftData = _
   private var datasetLoaded: Boolean = false
   private var variant: SiftVariant = _
+  private var skipReason: Option[String] = None
 
   override def beforeAll(): Unit = {
     if (System.getenv("SKIP_BENCHMARK") == "true") {
       println("SKIP_BENCHMARK=true, skipping SIFT benchmark")
+      skipReason = Some("SKIP_BENCHMARK=true")
       return
     }
 
@@ -49,20 +51,29 @@ class SiftBenchmarkTest extends AnyFunSuite with BeforeAndAfterAll {
         println(s"  Expected location: datasets/${variant.dirName}/")
         println(s"  Set SIFT_DATASET=siftsmall or SIFT_DATASET=sift1m")
         println(s"  Or set SKIP_BENCHMARK=true to skip")
+        skipReason = Some(
+          s"${variant.name} dataset not available at datasets/${variant.dirName}/"
+        )
       }
     } catch {
       case e: Exception =>
         println(s"Warning: Could not load dataset: ${e.getMessage}")
+        skipReason = Some(s"Failed to load dataset: ${e.getMessage}")
     }
   }
 
   private def requireDataset(): Unit = {
     if (!datasetLoaded) {
-      cancel(
-        s"""${variant.name} dataset not available.
-           |Place dataset files in: datasets/${variant.dirName}/
-           |Or set SKIP_BENCHMARK=true to skip.""".stripMargin
+      // Use the explicit skipReason if known (covers both
+      // SKIP_BENCHMARK=true, where variant is null, and the
+      // dataset-missing case). The previous version interpolated
+      // `${variant.name}` unconditionally and crashed with NPE under
+      // SKIP_BENCHMARK=true, surfacing as a failed test instead of a
+      // cancellation.
+      val reason = skipReason.getOrElse(
+        "SIFT dataset not available. Set SKIP_BENCHMARK=true to skip explicitly."
       )
+      cancel(reason)
     }
   }
 
