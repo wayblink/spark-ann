@@ -1,7 +1,7 @@
 package com.company.ann.spark.builder
 
 import com.company.ann.core.index.{HNSWConfig, HNSWLibIndex}
-import com.company.ann.spark.util.{IndexStorageUtils, ParquetVectorReader, SerializableConfiguration}
+import com.company.ann.spark.util.{IndexStorageUtils, SerializableConfiguration, StreamingParquetVectorReader}
 import org.apache.hadoop.conf.Configuration
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
@@ -120,6 +120,7 @@ object LocalIndexBuilder {
     // Get vector dimension from first file (cheap — reads one row group footer)
     val dimension = getVectorDimension(
       fileGroups.head.files.head.filePath,
+      vectorColumn,
       spark.sparkContext.hadoopConfiguration
     )
 
@@ -168,8 +169,11 @@ object LocalIndexBuilder {
   }
 
   /**
-   * Build a single local index for a file group.
-   * Runs on an executor — reads Parquet files directly via Hadoop APIs.
+   * Build a single local index for a file group by streaming vectors
+   * directly into the HNSW index. Peak heap is bounded to one parquet row
+   * group plus the HNSW graph itself; the full vector set is never
+   * materialized in memory. Boundary nodes are sampled in the same pass
+   * via reservoir sampling.
    */
   private def buildIndexForFileGroup(
     group: FileGroup,
@@ -182,52 +186,49 @@ object LocalIndexBuilder {
     boundaryNodesPerIndex: Int
   ): LocalIndexBuildResult = {
 
+    // Size the HNSW maxElements precisely from the FileGroup's known total.
+    // The previous implementation used maxElements * 2 as a defensive
+    // margin; with streaming we know the exact count up-front so the
+    // doubled allocation is pure waste at scale.
+    val total = math.max(group.totalVectors.toInt, 1)
+    val indexConfig = config.copy(maxElements = total)
+    val index = HNSWLibIndex(dimension, indexConfig, distanceType)
+    val reservoir = new StreamingBoundaryReservoir(boundaryNodesPerIndex)
+
     var vectorOffset = 0L
-    val allVectors = scala.collection.mutable.ArrayBuffer.empty[(Long, Array[Float])]
     val fileEntries = scala.collection.mutable.ArrayBuffer.empty[DataFileEntry]
 
-    // Read vectors from all files in the group using Parquet API (no SparkSession)
     group.files.foreach { fileInfo =>
-      val vectors = ParquetVectorReader.readVectors(fileInfo.filePath, vectorColumn, hadoopConf)
-
-      // Assign global IDs based on offset
-      vectors.zipWithIndex.foreach { case (vec, localIdx) =>
-        val globalIdx = vectorOffset + localIdx
-        allVectors += ((globalIdx, vec))
+      val startOffset = vectorOffset
+      var fileCount = 0L
+      val iter = StreamingParquetVectorReader.streamVectors(
+        fileInfo.filePath, vectorColumn, hadoopConf
+      )
+      while (iter.hasNext) {
+        val vec = iter.next()
+        val globalIdx = vectorOffset
+        index.add(globalIdx, vec)
+        reservoir.offer(globalIdx, vec)
+        vectorOffset += 1L
+        fileCount += 1L
       }
-
       fileEntries += DataFileEntry(
         filePath = fileInfo.filePath,
-        numVectors = vectors.length,
-        vectorOffset = vectorOffset
+        numVectors = fileCount,
+        vectorOffset = startOffset
       )
-
-      vectorOffset += vectors.length
     }
 
-    // Build HNSW index with appropriate maxElements
-    val indexConfig = config.copy(maxElements = math.max(allVectors.length * 2, 1000))
-    val index = HNSWLibIndex(dimension, indexConfig, distanceType)
-    index.addAll(allVectors.toSeq)
-
-    // Save index to shared storage
     val indexPath = s"$outputPath/local/${group.indexId}.hnsw"
     IndexStorageUtils.saveIndex(index, indexPath, hadoopConf)
 
-    // Sample boundary nodes while vectors are still in memory
-    val boundaryNodes = if (boundaryNodesPerIndex > 0) {
-      BoundaryNodeSelector.selectBoundaryNodes(
-        allVectors.toArray, group.indexId, boundaryNodesPerIndex
-      )
-    } else {
-      Array.empty[GlobalBoundaryNode]
-    }
+    val boundaryNodes = reservoir.result(group.indexId)
 
     val metadata = LocalIndexMetadata(
       indexId = group.indexId,
       dataFiles = fileEntries.toArray,
       indexPath = indexPath,
-      totalVectors = allVectors.length,
+      totalVectors = vectorOffset,
       dimension = dimension
     )
 
@@ -239,6 +240,7 @@ object LocalIndexBuilder {
    */
   private def getVectorDimension(
     filePath: String,
+    vectorColumn: String,
     hadoopConf: Configuration
   ): Int = {
     val path = new org.apache.hadoop.fs.Path(filePath)
@@ -256,7 +258,7 @@ object LocalIndexBuilder {
         new org.apache.parquet.example.data.simple.convert.GroupRecordConverter(schema)
       )
       val group = recordReader.read()
-      val vectorGroup = group.getGroup("vector", 0)
+      val vectorGroup = group.getGroup(vectorColumn, 0)
       vectorGroup.getFieldRepetitionCount("list")
     } finally {
       reader.close()

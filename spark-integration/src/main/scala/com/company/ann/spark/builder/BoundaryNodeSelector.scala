@@ -1,13 +1,15 @@
 package com.company.ann.spark.builder
 
 /**
- * Utility for selecting boundary nodes from a set of vectors.
- * Boundary nodes are representative vectors used for routing queries
- * to the correct local index in a multi-index setup.
+ * Utility for selecting boundary nodes from an already-materialized set of
+ * vectors. Deprecated: the streaming build path uses
+ * [[StreamingBoundaryReservoir]] instead, which samples in O(k) heap during
+ * a single iterator pass and never requires the full vector array in memory.
  *
- * This is a static utility so it can be called from both the driver
- * and executor closures.
+ * Kept for any caller that already has an in-memory `Array[(Long,
+ * Array[Float])]` and wants a deterministic even-spaced subsample.
  */
+@deprecated("Use StreamingBoundaryReservoir for memory-safe sampling during streaming builds", "0.2.0")
 object BoundaryNodeSelector {
 
   /**
