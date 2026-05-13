@@ -80,11 +80,12 @@ object LocalIndexBuilder {
     vectorColumn: String,
     indexOutputPath: String,
     config: HNSWConfig = HNSWConfig(),
-    distanceType: String = "euclidean"
+    distanceType: String = "euclidean",
+    idColumn: Option[String] = None
   ): Array[LocalIndexMetadata] = {
     buildFromFileGroupsWithBoundaryNodes(
       spark, fileGroups, vectorColumn, indexOutputPath, config, distanceType,
-      boundaryNodesPerIndex = 0
+      boundaryNodesPerIndex = 0, idColumn = idColumn
     ).map(_.metadata)
   }
 
@@ -101,6 +102,9 @@ object LocalIndexBuilder {
    * @param config                HNSW configuration parameters
    * @param distanceType          Distance metric type
    * @param boundaryNodesPerIndex Number of boundary nodes to sample per index
+   * @param idColumn              Optional user id column (INT32/INT64). When set, its
+   *                              value is used as the HNSW internal id directly so
+   *                              search results carry the user's id back.
    * @return Array of build results with metadata and boundary nodes
    */
   def buildFromFileGroupsWithBoundaryNodes(
@@ -110,7 +114,8 @@ object LocalIndexBuilder {
     indexOutputPath: String,
     config: HNSWConfig = HNSWConfig(),
     distanceType: String = "euclidean",
-    boundaryNodesPerIndex: Int = 50
+    boundaryNodesPerIndex: Int = 50,
+    idColumn: Option[String] = None
   ): Array[LocalIndexBuildResult] = {
 
     if (fileGroups.isEmpty) {
@@ -134,6 +139,7 @@ object LocalIndexBuilder {
     val bcDistanceType = spark.sparkContext.broadcast(distanceType)
     val bcDimension = spark.sparkContext.broadcast(dimension)
     val bcBoundaryNodesPerIndex = spark.sparkContext.broadcast(boundaryNodesPerIndex)
+    val bcIdColumn = spark.sparkContext.broadcast(idColumn)
 
     // Parallelize file groups — one partition per file group for maximum parallelism
     val numPartitions = math.min(fileGroups.length, spark.sparkContext.defaultParallelism)
@@ -148,9 +154,11 @@ object LocalIndexBuilder {
       val distType = bcDistanceType.value
       val dim = bcDimension.value
       val numBoundaryNodes = bcBoundaryNodesPerIndex.value
+      val idCol = bcIdColumn.value
 
       buildIndexForFileGroup(
-        group, vecColumn, dim, outputPath, hnswConfig, distType, hadoopConf, numBoundaryNodes
+        group, vecColumn, dim, outputPath, hnswConfig, distType, hadoopConf,
+        numBoundaryNodes, idCol
       )
     }
 
@@ -164,6 +172,7 @@ object LocalIndexBuilder {
     bcDistanceType.destroy()
     bcDimension.destroy()
     bcBoundaryNodesPerIndex.destroy()
+    bcIdColumn.destroy()
 
     results
   }
@@ -174,6 +183,10 @@ object LocalIndexBuilder {
    * group plus the HNSW graph itself; the full vector set is never
    * materialized in memory. Boundary nodes are sampled in the same pass
    * via reservoir sampling.
+   *
+   * When `idColumn` is set, each row's id value is used as the HNSW internal
+   * id (after INT32 widening if necessary). When unset, sequential ids
+   * starting from 0 are assigned per local index (original behavior).
    */
   private def buildIndexForFileGroup(
     group: FileGroup,
@@ -183,35 +196,50 @@ object LocalIndexBuilder {
     config: HNSWConfig,
     distanceType: String,
     hadoopConf: Configuration,
-    boundaryNodesPerIndex: Int
+    boundaryNodesPerIndex: Int,
+    idColumn: Option[String]
   ): LocalIndexBuildResult = {
 
-    // Size the HNSW maxElements precisely from the FileGroup's known total.
-    // The previous implementation used maxElements * 2 as a defensive
-    // margin; with streaming we know the exact count up-front so the
-    // doubled allocation is pure waste at scale.
     val total = math.max(group.totalVectors.toInt, 1)
     val indexConfig = config.copy(maxElements = total)
     val index = HNSWLibIndex(dimension, indexConfig, distanceType)
     val reservoir = new StreamingBoundaryReservoir(boundaryNodesPerIndex)
 
-    var vectorOffset = 0L
+    var rowsSeen = 0L
     val fileEntries = scala.collection.mutable.ArrayBuffer.empty[DataFileEntry]
 
     group.files.foreach { fileInfo =>
-      val startOffset = vectorOffset
+      val startOffset = rowsSeen
       var fileCount = 0L
-      val iter = StreamingParquetVectorReader.streamVectors(
-        fileInfo.filePath, vectorColumn, hadoopConf
-      )
-      while (iter.hasNext) {
-        val vec = iter.next()
-        val globalIdx = vectorOffset
-        index.add(globalIdx, vec)
-        reservoir.offer(globalIdx, vec)
-        vectorOffset += 1L
-        fileCount += 1L
+
+      idColumn match {
+        case Some(col) =>
+          // User-id mode: read both id and vector; HNSW internal id == user id.
+          val iter = StreamingParquetVectorReader.streamRows(
+            fileInfo.filePath, col, vectorColumn, hadoopConf
+          )
+          while (iter.hasNext) {
+            val (userId, vec) = iter.next()
+            index.add(userId, vec)
+            reservoir.offer(userId, vec)
+            rowsSeen += 1L
+            fileCount += 1L
+          }
+        case None =>
+          // Sequential-id mode: vectorOffset becomes the HNSW internal id.
+          val iter = StreamingParquetVectorReader.streamVectors(
+            fileInfo.filePath, vectorColumn, hadoopConf
+          )
+          while (iter.hasNext) {
+            val vec = iter.next()
+            val seqId = rowsSeen
+            index.add(seqId, vec)
+            reservoir.offer(seqId, vec)
+            rowsSeen += 1L
+            fileCount += 1L
+          }
       }
+
       fileEntries += DataFileEntry(
         filePath = fileInfo.filePath,
         numVectors = fileCount,
@@ -228,7 +256,7 @@ object LocalIndexBuilder {
       indexId = group.indexId,
       dataFiles = fileEntries.toArray,
       indexPath = indexPath,
-      totalVectors = vectorOffset,
+      totalVectors = rowsSeen,
       dimension = dimension
     )
 

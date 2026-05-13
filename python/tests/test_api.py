@@ -75,3 +75,37 @@ def test_camelcase_config_keys_are_accepted(spark, tmp_index_dir):
     assert int(cfg.M()) == 12
     assert int(cfg.efConstruction()) == 120
     assert str(cfg.distanceType()) == "cosine"
+
+
+def test_id_column_preserves_user_id(spark, tmp_index_dir):
+    import random
+    import spark_ann
+    from pyspark.sql.types import LongType, StructField, StructType, ArrayType, FloatType
+
+    # Build with an explicit Long id column. The schema must say LongType
+    # explicitly because Python ints would otherwise be inferred narrower
+    # and INT32 widening still works but the test is cleaner with INT64.
+    # Use a fresh RNG per row index so vectors stay unique — a naïve
+    # `i*0.1 mod 1.0` generator collides every 10 rows and a self-probe
+    # then legitimately matches a different (but vector-equal) row.
+    schema = StructType([
+        StructField("id", LongType(), nullable=False),
+        StructField("vector", ArrayType(FloatType()), nullable=False),
+    ])
+    base_id = 10000000
+    rng = random.Random(7)
+    rows = [(base_id + i * 7, [rng.random() for _ in range(16)]) for i in range(200)]
+    df = spark.createDataFrame(rows, schema=schema)
+
+    index_path = os.path.join(tmp_index_dir, "idx")
+    spark_ann.build_ann_index(
+        df, "vector", index_path,
+        config={"M": 16, "ef_construction": 100, "id_column": "id"},
+    )
+
+    # Self-probe row 50; expect the top hit's id to be that user id, not
+    # the parquet row offset.
+    probe_id, probe_vec = rows[50]
+    hits = spark_ann.ann_search(spark, index_path, probe_vec, k=3, ef=200).collect()
+    assert hits, "expected at least one hit"
+    assert hits[0].id == probe_id, f"expected user id {probe_id}, got {hits[0].id}"

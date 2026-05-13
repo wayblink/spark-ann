@@ -12,15 +12,21 @@ import com.wayblink.ann.spark.builder.GroupingStrategy
  * @param targetVectorsPerIndex  Target vectors per local index (for MergeSmall strategy)
  * @param boundaryNodesPerIndex  Number of boundary nodes per local index for global routing
  * @param distanceType           Distance metric: "euclidean" or "cosine"
+ * @param idColumn               Optional name of the user's id column. If set, must be
+ *                               parquet INT32/INT64; the value becomes the HNSW internal id
+ *                               and is preserved through to search results. If unset,
+ *                               internal ids are sequential offsets within each local
+ *                               index (preserves the original behavior).
  */
-@SerialVersionUID(2L)
+@SerialVersionUID(3L)
 case class ANNIndexConfig(
   M: Int = 16,
   efConstruction: Int = 200,
   groupingStrategy: GroupingStrategy = com.wayblink.ann.spark.builder.SingleFile,
   targetVectorsPerIndex: Long = 500000,
   boundaryNodesPerIndex: Int = 50,
-  distanceType: String = "euclidean"
+  distanceType: String = "euclidean",
+  idColumn: Option[String] = None
 ) extends Serializable {
   /**
    * Convert to core HNSWConfig.
