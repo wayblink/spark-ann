@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyspark-ann"
+version = "0.1.0"
+description = "PySpark bindings for spark-ann distributed HNSW vector index"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "Proprietary" }
+authors = [{ name = "spark-ann" }]
+dependencies = [
+    "pyspark>=3.4.0,<4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pytest-spark>=0.6",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["spark_ann*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
