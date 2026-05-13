@@ -2,34 +2,57 @@ package com.company.ann.spark.search
 
 import com.company.ann.core.index.{HNSWLibIndex, SearchResult}
 import com.company.ann.spark.api.ANNIndexMetadata
-import com.company.ann.spark.builder.LocalIndexMetadata
-import com.company.ann.spark.util.ExecutorIndexCache
+import com.company.ann.spark.builder.{LocalIndexMetadata, MetadataJson}
+import com.company.ann.spark.util.{DriverIndexCache, ExecutorIndexCache}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 
-import java.io.{ObjectInputStream}
-import java.nio.file.{Files, Paths}
+import java.nio.file.Paths
 
 /**
  * ANN Searcher for querying built indexes.
- * Supports single query search, batch search, and multi-index search.
  *
- * @param spark          SparkSession instance
- * @param indexMetadata  Metadata for the loaded index
- * @param localIndexes   Map of indexId -> loaded HNSW index
- * @param globalIndex    Optional global routing index
+ * Driver-side state is intentionally lightweight: metadata and boundary
+ * routing map only. HNSW indexes themselves are loaded lazily on first
+ * access — via [[DriverIndexCache]] for single-query `search`, via
+ * [[ExecutorIndexCache]] for distributed `batchSearch`. This keeps the
+ * driver heap bounded even when the full index set is orders of magnitude
+ * larger than the driver's memory.
+ *
+ * `preloadedLocal` and `preloadedGlobal` exist for tests and small
+ * interactive sessions that want to skip the cache.
  */
 class ANNSearcher private (
   spark: SparkSession,
   val indexMetadata: ANNIndexMetadata,
-  private val localIndexes: Map[String, HNSWLibIndex],
-  private val globalIndex: Option[HNSWLibIndex]
+  private val preloadedLocal: Map[String, HNSWLibIndex],
+  private val preloadedGlobal: Option[HNSWLibIndex],
+  private val boundaryMap: Array[String]
 ) {
 
   private val dimension = indexMetadata.dimension
+  private val localIndexPaths: Map[String, String] =
+    indexMetadata.localIndexes.map(m => m.indexId -> m.indexPath).toMap
+  private val allIndexIds: Seq[String] =
+    indexMetadata.localIndexes.map(_.indexId).toSeq
+
+  private def resolveLocal(indexId: String): Option[HNSWLibIndex] = {
+    preloadedLocal.get(indexId).orElse {
+      localIndexPaths.get(indexId).map { path =>
+        DriverIndexCache.getOrLoadLocal(indexId, path)
+      }
+    }
+  }
+
+  private def resolveGlobal(): Option[HNSWLibIndex] = {
+    preloadedGlobal.orElse {
+      indexMetadata.globalIndexPath.map(DriverIndexCache.getOrLoadGlobal)
+    }
+  }
 
   /**
-   * Search for nearest neighbors of a single query vector.
-   * Runs on the driver since single-query latency is already fast.
+   * Search for nearest neighbors of a single query vector. Loads only the
+   * target local indexes selected by the routing step (or, in the no-global
+   * fallback, all indexes, which is why global routing matters at scale).
    *
    * @param queryVector Query vector
    * @param k           Number of neighbors to return
@@ -47,39 +70,28 @@ class ANNSearcher private (
       s"Query dimension ${queryVector.length} doesn't match index dimension $dimension")
     require(k > 0, "k must be positive")
 
-    // Determine which local indexes to search
     val targetIndexIds = ANNSearcher.selectTargetIndexes(
-      queryVector, nprobe, globalIndex, localIndexes, indexMetadata
+      queryVector, nprobe, resolveGlobal(), allIndexIds, boundaryMap
     )
 
-    // Search each target index and merge results
     val allResults = scala.collection.mutable.ArrayBuffer.empty[(Long, Float, String)]
-
     targetIndexIds.foreach { indexId =>
-      localIndexes.get(indexId).foreach { index =>
-        val results = index.search(queryVector, k, ef)
-        results.foreach { r =>
+      resolveLocal(indexId).foreach { index =>
+        index.search(queryVector, k, ef).foreach { r =>
           allResults += ((r.id, r.distance, indexId))
         }
       }
     }
 
-    // Sort by distance and take top k
     val topK = allResults.sortBy(_._2).take(k)
-
-    // Create DataFrame
-    import spark.implicits._
+    val localSpark = spark
+    import localSpark.implicits._
     topK.toSeq.toDF("id", "distance", "indexId")
   }
 
   /**
-   * Search a specific local index.
-   *
-   * @param indexId     ID of the local index to search
-   * @param queryVector Query vector
-   * @param k           Number of neighbors to return
-   * @param ef          Search ef parameter
-   * @return Sequence of SearchResult
+   * Search a specific local index. Loads the index on demand via the
+   * driver cache if not already resident.
    */
   def searchIndex(
     indexId: String,
@@ -90,7 +102,7 @@ class ANNSearcher private (
     require(queryVector.length == dimension,
       s"Query dimension ${queryVector.length} doesn't match index dimension $dimension")
 
-    localIndexes.get(indexId) match {
+    resolveLocal(indexId) match {
       case Some(index) => index.search(queryVector, k, ef)
       case None => throw new IllegalArgumentException(s"Index '$indexId' not found")
     }
@@ -117,63 +129,78 @@ class ANNSearcher private (
   ): DataFrame = {
     require(k > 0, "k must be positive")
 
-    // Broadcast index paths and metadata (small data)
-    val indexPaths = indexMetadata.localIndexes.map(m => (m.indexId, m.indexPath)).toMap
-    val bcIndexPaths = spark.sparkContext.broadcast(indexPaths)
+    val bcIndexPaths = spark.sparkContext.broadcast(localIndexPaths)
     val bcGlobalIndexPath = spark.sparkContext.broadcast(indexMetadata.globalIndexPath)
-    val bcMetadata = spark.sparkContext.broadcast(indexMetadata)
+    val bcBoundaryMap = spark.sparkContext.broadcast(boundaryMap)
+    val bcAllIndexIds = spark.sparkContext.broadcast(allIndexIds)
     val bcK = spark.sparkContext.broadcast(k)
     val bcNprobe = spark.sparkContext.broadcast(nprobe)
     val bcEf = spark.sparkContext.broadcast(ef)
-    val bcDimension = spark.sparkContext.broadcast(dimension)
 
-    // Convert query vectors to RDD with index
     val queriesRDD = queries.select(queryVectorColumn).rdd.zipWithIndex().map {
-      case (row, idx) => (idx.toInt, row.getAs[Seq[Float]](0).toArray)
+      case (row, idx) =>
+        // Python-created DataFrames store float lists as DOUBLE; Scala
+        // Array[Float] ends up as FLOAT. Cover both by reading Any and
+        // coercing each element.
+        val raw = row.get(0).asInstanceOf[Seq[_]]
+        val arr = new Array[Float](raw.size)
+        var i = 0
+        raw.foreach { v =>
+          arr(i) = v match {
+            case f: java.lang.Float  => f.floatValue()
+            case d: java.lang.Double => d.doubleValue().toFloat
+            case n: Number           => n.floatValue()
+            case other =>
+              throw new IllegalArgumentException(
+                s"Unsupported vector element type: ${other.getClass}")
+          }
+          i += 1
+        }
+        (idx.toInt, arr)
     }
 
-    // Process queries on executors using mapPartitions
     val resultsRDD = queriesRDD.mapPartitions { iter =>
-      // Load indexes once per partition (cached per executor JVM)
       val localIdxs = ExecutorIndexCache.getOrLoadLocal(bcIndexPaths.value)
       val globalIdx = bcGlobalIndexPath.value.map(ExecutorIndexCache.getOrLoadGlobal)
-      val meta = bcMetadata.value
+      val boundary = bcBoundaryMap.value
+      val allIds = bcAllIndexIds.value
       val searchK = bcK.value
       val searchNprobe = bcNprobe.value
       val searchEf = bcEf.value
 
       iter.flatMap { case (queryIdx, queryVector) =>
-        // Route query to target indexes
         val targetIndexIds = ANNSearcher.selectTargetIndexes(
-          queryVector, searchNprobe, globalIdx, localIdxs, meta
+          queryVector, searchNprobe, globalIdx, allIds, boundary
         )
 
         val queryResults = scala.collection.mutable.ArrayBuffer.empty[(Long, Float, String)]
         targetIndexIds.foreach { indexId =>
           localIdxs.get(indexId).foreach { index =>
-            val results = index.search(queryVector, searchK, searchEf)
-            results.foreach(r => queryResults += ((r.id, r.distance, indexId)))
+            index.search(queryVector, searchK, searchEf).foreach { r =>
+              queryResults += ((r.id, r.distance, indexId))
+            }
           }
         }
 
-        // Take top k for this query
         queryResults.sortBy(_._2).take(searchK).map { case (id, dist, indexId) =>
           (queryIdx, id, dist, indexId)
         }
       }
     }
 
-    import spark.implicits._
+    val localSpark = spark
+    import localSpark.implicits._
     resultsRDD.toDF("queryIndex", "id", "distance", "indexId")
   }
 
   /**
-   * Get list of all local index IDs.
+   * Get list of all local index IDs (from metadata; does not require
+   * indexes to be loaded).
    */
-  def listIndexIds: Seq[String] = localIndexes.keys.toSeq
+  def listIndexIds: Seq[String] = allIndexIds
 
   /**
-   * Get total number of vectors in the index.
+   * Total number of vectors across all local indexes.
    */
   def totalVectors: Long = indexMetadata.totalVectors
 
@@ -184,8 +211,9 @@ class ANNSearcher private (
     s"""ANNSearcher Statistics:
        |  Total vectors: $totalVectors
        |  Dimension: $dimension
-       |  Local indexes: ${localIndexes.size}
-       |  Global index: ${globalIndex.isDefined}
+       |  Local indexes (metadata): ${allIndexIds.length}
+       |  Local indexes (preloaded): ${preloadedLocal.size}
+       |  Global index: ${indexMetadata.globalIndexPath.isDefined}
        |""".stripMargin
   }
 }
@@ -193,100 +221,78 @@ class ANNSearcher private (
 object ANNSearcher {
 
   /**
-   * Load an ANNSearcher from disk.
-   *
-   * @param spark     SparkSession instance
-   * @param indexPath Path to the index directory
-   * @return Loaded ANNSearcher instance
+   * Load an ANNSearcher from disk. Reads only JSON metadata and the
+   * boundary routing map; HNSW indexes are loaded lazily on first
+   * access. Calling this against a large index set is O(metadata size),
+   * not O(indexes).
    */
   def load(spark: SparkSession, indexPath: String): ANNSearcher = {
-    val metadataPath = Paths.get(indexPath, "ann_index.meta")
+    val metadataPath = Paths.get(indexPath, "ann_index.json")
+    val metadata = MetadataJson.readMetadata(metadataPath)
 
-    // Load metadata
-    val ois = new ObjectInputStream(Files.newInputStream(metadataPath))
-    val metadata = try {
-      ois.readObject().asInstanceOf[ANNIndexMetadata]
-    } finally {
-      ois.close()
+    val boundaryMap: Array[String] = if (metadata.globalIndexPath.isDefined) {
+      val mappingPath = Paths.get(indexPath, "global", "boundary_mapping.json")
+      val entries = MetadataJson.readBoundaryMapping(mappingPath)
+      val arr = new Array[String](entries.length)
+      var i = 0
+      while (i < entries.length) {
+        val e = entries(i)
+        arr(e.globalId) = e.indexId
+        i += 1
+      }
+      arr
+    } else {
+      Array.empty[String]
     }
 
-    // Load local indexes
-    val localIndexes = metadata.localIndexes.map { localMeta =>
-      val index = HNSWLibIndex.load(localMeta.indexPath)
-      (localMeta.indexId, index)
-    }.toMap
-
-    // Load global index if present
-    val globalIndex = metadata.globalIndexPath.map { path =>
-      HNSWLibIndex.load(path)
-    }
-
-    new ANNSearcher(spark, metadata, localIndexes, globalIndex)
+    new ANNSearcher(spark, metadata, Map.empty, None, boundaryMap)
   }
 
   /**
-   * Create an ANNSearcher directly from metadata and loaded indexes.
-   * Useful for testing or when indexes are already in memory.
+   * Create an ANNSearcher directly from metadata and already-loaded
+   * indexes. Useful for tests or when indexes are pre-materialized in
+   * memory.
    */
   def create(
     spark: SparkSession,
     metadata: ANNIndexMetadata,
     localIndexes: Map[String, HNSWLibIndex],
-    globalIndex: Option[HNSWLibIndex] = None
+    globalIndex: Option[HNSWLibIndex] = None,
+    boundaryMap: Array[String] = Array.empty
   ): ANNSearcher = {
-    new ANNSearcher(spark, metadata, localIndexes, globalIndex)
+    new ANNSearcher(spark, metadata, localIndexes, globalIndex, boundaryMap)
   }
 
   /**
    * Select which local indexes to search based on query vector.
-   * Uses global routing index if available, otherwise searches all indexes.
-   * This is a static method so it can be called from both driver and executor closures.
    *
    * @param queryVector  Query vector
    * @param nprobe       Number of indexes to select
    * @param globalIndex  Optional global routing index
-   * @param localIndexes Map of available local indexes
-   * @param metadata     Index metadata for routing lookup
-   * @return List of index IDs to search
+   * @param allIndexIds  All known local indexIds (used as fallback when
+   *                     routing is unavailable or yields nothing)
+   * @param boundaryMap  Array indexed by global routing id, value is
+   *                     source local indexId
    */
   private[search] def selectTargetIndexes(
     queryVector: Array[Float],
     nprobe: Int,
     globalIndex: Option[HNSWLibIndex],
-    localIndexes: Map[String, HNSWLibIndex],
-    metadata: ANNIndexMetadata
+    allIndexIds: Seq[String],
+    boundaryMap: Array[String]
   ): Seq[String] = {
     globalIndex match {
-      case Some(global) =>
-        // Use global index to route query to most relevant local indexes
+      case Some(global) if boundaryMap.nonEmpty =>
         val routingResults = global.search(queryVector, nprobe * 2, ef = 100)
-
-        // Extract unique index IDs from routing results
-        val indexIds = routingResults.map { r =>
-          findIndexIdForGlobalId(r.id, metadata)
+        val indexIds = routingResults.flatMap { r =>
+          val gid = r.id.toInt
+          if (gid >= 0 && gid < boundaryMap.length) Some(boundaryMap(gid)) else None
         }.distinct.take(nprobe)
 
-        if (indexIds.isEmpty) {
-          // Fallback to all indexes if routing fails
-          localIndexes.keys.take(nprobe).toSeq
-        } else {
-          indexIds
-        }
+        if (indexIds.isEmpty) allIndexIds else indexIds
 
-      case None =>
-        // No global index, search all local indexes
-        localIndexes.keys.toSeq
+      case _ =>
+        allIndexIds
     }
-  }
-
-  /**
-   * Find the local index ID that contains a global vector ID.
-   */
-  private def findIndexIdForGlobalId(globalId: Long, metadata: ANNIndexMetadata): String = {
-    metadata.localIndexes.find { meta =>
-      val minId = meta.dataFiles.head.vectorOffset
-      val maxId = minId + meta.totalVectors
-      globalId >= minId && globalId < maxId
-    }.map(_.indexId).getOrElse(metadata.localIndexes.head.indexId)
   }
 }

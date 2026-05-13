@@ -13,11 +13,11 @@ import com.company.ann.spark.builder.GroupingStrategy
  * @param boundaryNodesPerIndex  Number of boundary nodes per local index for global routing
  * @param distanceType           Distance metric: "euclidean" or "cosine"
  */
-@SerialVersionUID(1L)
+@SerialVersionUID(2L)
 case class ANNIndexConfig(
   M: Int = 16,
   efConstruction: Int = 200,
-  @transient groupingStrategy: GroupingStrategy = com.company.ann.spark.builder.SingleFile,
+  groupingStrategy: GroupingStrategy = com.company.ann.spark.builder.SingleFile,
   targetVectorsPerIndex: Long = 500000,
   boundaryNodesPerIndex: Int = 50,
   distanceType: String = "euclidean"

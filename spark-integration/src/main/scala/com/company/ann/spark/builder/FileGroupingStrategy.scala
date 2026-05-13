@@ -8,7 +8,7 @@ import scala.collection.mutable
  * Sealed trait representing file grouping strategies.
  * Determines how data files are grouped for index building.
  */
-sealed trait GroupingStrategy
+sealed trait GroupingStrategy extends Serializable
 
 /**
  * Each data file gets its own index (1:1 mapping).

@@ -4,8 +4,8 @@ import com.company.ann.core.index.{HNSWConfig, HNSWLibIndex}
 import com.company.ann.spark.api.{ANNIndexConfig, ANNIndexMetadata, ANNIndexStatistics}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 
-import java.io.{File, ObjectOutputStream}
-import java.nio.file.{Files, Paths}
+import java.io.File
+import java.nio.file.Paths
 
 /**
  * Boundary node selected from a local index for global routing.
@@ -192,40 +192,27 @@ class ANNIndexBuilder(spark: SparkSession) {
   }
 
   /**
-   * Save boundary node mapping for reverse lookup.
+   * Save boundary node mapping for reverse lookup. Array index = global
+   * routing id (the same id `zipWithIndex` assigned when adding to the
+   * global HNSW), value = source local index id + original local id.
    */
   private def saveBoundaryNodeMapping(
     boundaryNodes: Array[GlobalBoundaryNode],
     outputPath: String
   ): Unit = {
-    val mappingPath = Paths.get(outputPath, "global", "boundary_mapping.meta")
-    Files.createDirectories(mappingPath.getParent)
-
-    val oos = new ObjectOutputStream(Files.newOutputStream(mappingPath))
-    try {
-      // Save as array of (globalIndexId, sourceIndexId, localId)
-      val mapping = boundaryNodes.zipWithIndex.map { case (node, idx) =>
-        (idx, node.indexId, node.localId)
-      }
-      oos.writeObject(mapping)
-    } finally {
-      oos.close()
+    val mappingPath = Paths.get(outputPath, "global", "boundary_mapping.json")
+    val entries = boundaryNodes.zipWithIndex.map { case (node, idx) =>
+      BoundaryMappingEntry(idx, node.indexId, node.localId)
     }
+    MetadataJson.writeBoundaryMapping(entries, mappingPath)
   }
 
   /**
-   * Save index metadata to disk.
+   * Save index metadata to disk as JSON.
    */
   private def saveMetadata(metadata: ANNIndexMetadata, outputPath: String): Unit = {
-    val metadataPath = Paths.get(outputPath, "ann_index.meta")
-    Files.createDirectories(metadataPath.getParent)
-
-    val oos = new ObjectOutputStream(Files.newOutputStream(metadataPath))
-    try {
-      oos.writeObject(metadata)
-    } finally {
-      oos.close()
-    }
+    val metadataPath = Paths.get(outputPath, "ann_index.json")
+    MetadataJson.writeMetadata(metadata, metadataPath)
   }
 }
 
