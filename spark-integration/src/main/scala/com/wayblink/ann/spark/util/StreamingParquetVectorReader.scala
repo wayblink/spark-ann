@@ -45,23 +45,23 @@ object StreamingParquetVectorReader {
   }
 
   /**
-   * Stream `(id, vector)` tuples from a Parquet file. The id column must
+   * Stream `(pk, vector)` tuples from a Parquet file. The pk column must
    * be parquet INT64 or INT32; anything else raises at open time so the
    * caller fails fast before reading any rows.
    *
-   * Used when the user supplies an `idColumn` so the search result can
-   * carry their own id back instead of HNSW's internal counter.
+   * Used when the user supplies a primary-key column so search results
+   * carry their own pk back instead of HNSW's internal counter.
    */
   def streamRows(
     filePath: String,
-    idColumn: String,
+    pkColumn: String,
     vectorColumn: String,
     hadoopConf: Configuration
   ): Iterator[(Long, Array[Float])] = {
     val path = new Path(filePath)
     val inputFile = HadoopInputFile.fromPath(path, hadoopConf)
     val reader = ParquetFileReader.open(inputFile)
-    new IdVectorIterator(reader, idColumn, vectorColumn)
+    new PkVectorIterator(reader, pkColumn, vectorColumn)
   }
 
   private final class VectorIterator(
@@ -120,19 +120,19 @@ object StreamingParquetVectorReader {
   }
 
   /**
-   * Iterator yielding (idLong, vector) tuples. Id type is normalised to
+   * Iterator yielding (pkLong, vector) tuples. Pk type is normalised to
    * Long up front; INT32 columns are widened.
    */
-  private final class IdVectorIterator(
+  private final class PkVectorIterator(
     reader: ParquetFileReader,
-    idColumn: String,
+    pkColumn: String,
     vectorColumn: String
   ) extends Iterator[(Long, Array[Float])] {
 
     private val schema: MessageType = reader.getFooter.getFileMetaData.getSchema
     private val columnIOFactory = new ColumnIOFactory()
     private val elementsAreDouble: Boolean = detectDoubleElement(schema, vectorColumn)
-    private val idIsInt32: Boolean = detectInt32Id(schema, idColumn)
+    private val pkIsInt32: Boolean = detectInt32Pk(schema, pkColumn)
 
     private var pages: PageReadStore = _
     private var recordReader: org.apache.parquet.io.RecordReader[Group] = _
@@ -165,10 +165,10 @@ object StreamingParquetVectorReader {
       if (!hasNext) throw new NoSuchElementException("No more rows in parquet stream")
       val group = recordReader.read()
       rowsLeftInGroup -= 1
-      val id = if (idIsInt32) group.getInteger(idColumn, 0).toLong
-               else group.getLong(idColumn, 0)
+      val pk = if (pkIsInt32) group.getInteger(pkColumn, 0).toLong
+               else group.getLong(pkColumn, 0)
       val vec = readVector(group, vectorColumn, elementsAreDouble)
-      (id, vec)
+      (pk, vec)
     }
 
     private def closeQuietly(): Unit = {
@@ -245,28 +245,28 @@ object StreamingParquetVectorReader {
   }
 
   /**
-   * Inspect the parquet schema to determine whether the id column is
+   * Inspect the parquet schema to determine whether the pk column is
    * INT32 (true) or INT64 (false). Any other type is rejected with a
    * message pointing the caller at the future mapping-table support.
    */
-  private def detectInt32Id(schema: MessageType, idColumn: String): Boolean = {
+  private def detectInt32Pk(schema: MessageType, pkColumn: String): Boolean = {
     import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
     val fields = schema.getFields
     var i = 0
     var found: Option[org.apache.parquet.schema.Type] = None
     while (i < fields.size() && found.isEmpty) {
       val f = fields.get(i)
-      if (f.getName == idColumn) found = Some(f)
+      if (f.getName == pkColumn) found = Some(f)
       i += 1
     }
     val field = found.getOrElse(
       throw new IllegalArgumentException(
-        s"Id column '$idColumn' not found in parquet schema"
+        s"Pk column '$pkColumn' not found in parquet schema"
       )
     )
     if (!field.isPrimitive) {
       throw new IllegalArgumentException(
-        s"Id column '$idColumn' must be a primitive INT32 or INT64, got ${field.toString}"
+        s"Pk column '$pkColumn' must be a primitive INT32 or INT64, got ${field.toString}"
       )
     }
     field.asPrimitiveType().getPrimitiveTypeName match {
@@ -274,9 +274,9 @@ object StreamingParquetVectorReader {
       case PrimitiveTypeName.INT64 => false
       case other =>
         throw new IllegalArgumentException(
-          s"Id column '$idColumn' must be INT32 or INT64, got $other. " +
-            "String / UUID id columns will be supported via a mapping table " +
-            "in a future release; for now, project to a Long id (e.g. via hash + monotonic_id)."
+          s"Pk column '$pkColumn' must be INT32 or INT64, got $other. " +
+            "String / UUID pk columns will be supported via a mapping table " +
+            "in a future release; for now, project to a Long pk (e.g. via hash + monotonic_id)."
         )
     }
   }

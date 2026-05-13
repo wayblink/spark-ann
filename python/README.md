@@ -118,7 +118,7 @@ Keys accept either snake_case (Pythonic) or camelCase (matching the Scala
 | `target_vectors_per_index` / `targetVectorsPerIndex` | 500000 | Vectors per local index |
 | `boundary_nodes_per_index` / `boundaryNodesPerIndex` | 50 | Routing samples per local index |
 | `distance_type` / `distanceType` | `"euclidean"` | `"euclidean"` or `"cosine"` |
-| `id_column` / `idColumn` | `None` | Optional INT32/INT64 column whose values become the HNSW internal ids. When set, search results carry your id back. When unset, results use sequential parquet-row offsets. |
+| `pk` | `None` | Optional INT32/INT64 primary-key column whose values become the HNSW internal ids. When set, search results carry your pk back. When unset, results use sequential parquet-row offsets. |
 
 ## Development
 

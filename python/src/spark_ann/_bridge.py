@@ -67,7 +67,7 @@ def to_jvm_float_array(values) -> Any:
 # Field order MUST match
 # com.wayblink.ann.spark.api.ANNIndexConfig case-class apply(...):
 #   (M, efConstruction, groupingStrategy, targetVectorsPerIndex,
-#    boundaryNodesPerIndex, distanceType, idColumn)
+#    boundaryNodesPerIndex, distanceType, pk)
 # A change there without updating this list silently drops fields.
 _CONFIG_FIELD_ORDER = (
     "M",
@@ -76,7 +76,7 @@ _CONFIG_FIELD_ORDER = (
     "target_vectors_per_index",
     "boundary_nodes_per_index",
     "distance_type",
-    "id_column",
+    "pk",
 )
 
 _DEFAULT_CONFIG: Dict[str, Any] = {
@@ -86,7 +86,7 @@ _DEFAULT_CONFIG: Dict[str, Any] = {
     "target_vectors_per_index": 500000,
     "boundary_nodes_per_index": 50,
     "distance_type": "euclidean",
-    "id_column": None,
+    "pk": None,
 }
 
 
@@ -119,7 +119,7 @@ def dict_to_config(config: Optional[Dict[str, Any]]) -> Any:
             "Use 'SingleFile' or 'MergeSmall'."
         )
 
-    id_column_jopt = _to_jvm_option(merged["id_column"])
+    pk_jopt = _to_jvm_option(merged["pk"])
 
     return j.com.wayblink.ann.spark.api.ANNIndexConfig.apply(
         int(merged["M"]),
@@ -128,7 +128,7 @@ def dict_to_config(config: Optional[Dict[str, Any]]) -> Any:
         int(merged["target_vectors_per_index"]),
         int(merged["boundary_nodes_per_index"]),
         str(merged["distance_type"]),
-        id_column_jopt,
+        pk_jopt,
     )
 
 
@@ -148,6 +148,6 @@ def _normalize_key(key: str) -> str:
         "targetVectorsPerIndex": "target_vectors_per_index",
         "boundaryNodesPerIndex": "boundary_nodes_per_index",
         "distanceType": "distance_type",
-        "idColumn": "id_column",
+        # `pk` has no camelCase variant — it's already a single token.
     }
     return camel_to_snake.get(key, key)

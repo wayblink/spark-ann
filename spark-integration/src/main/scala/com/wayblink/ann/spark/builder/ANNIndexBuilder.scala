@@ -101,7 +101,7 @@ class ANNIndexBuilder(spark: SparkSession) {
       hnswConfig,
       config.distanceType,
       config.boundaryNodesPerIndex,
-      config.idColumn
+      config.pk
     )
 
     val localMetadata = buildResults.map(_.metadata)

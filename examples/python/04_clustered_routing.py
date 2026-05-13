@@ -78,7 +78,7 @@ def main() -> None:
         groups = api.groupFiles(files, single_file, 500000)
         # ANNIndexConfig.apply takes (M, efConstruction, groupingStrategy,
         # targetVectorsPerIndex, boundaryNodesPerIndex, distanceType,
-        # idColumn: Option[String]). We pass scala.Option.empty() because
+        # pk: Option[String]). We pass scala.Option.empty() because
         # this example uses the sequential-id mode.
         none_opt = jvm.scala.Option.empty()
         cfg = jvm.com.wayblink.ann.spark.api.ANNIndexConfig.apply(
