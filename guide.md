@@ -28,8 +28,8 @@ sbt apiServer/assembly          # Standalone API server
 ### Minimal Example
 
 ```scala
-import com.company.ann.spark.api._
-import com.company.ann.spark.api.ANNDataFrameExtensions._
+import com.wayblink.ann.spark.api._
+import com.wayblink.ann.spark.api.ANNDataFrameExtensions._
 import org.apache.spark.sql.SparkSession
 
 val spark = SparkSession.builder()
@@ -68,7 +68,7 @@ results.show()
 Use `ANNIndexAPI` when you prefer explicit method calls over implicit DataFrame extensions:
 
 ```scala
-import com.company.ann.spark.api.ANNIndexAPI
+import com.wayblink.ann.spark.api.ANNIndexAPI
 
 // Build
 val metadata = ANNIndexAPI.buildIndex(df, "vector", "/tmp/ann_index")
@@ -87,8 +87,8 @@ val batchResults = ANNIndexAPI.batchSearch(
 Pass `ANNIndexConfig` to control index construction:
 
 ```scala
-import com.company.ann.spark.api.ANNIndexConfig
-import com.company.ann.spark.builder.MergeSmall
+import com.wayblink.ann.spark.api.ANNIndexConfig
+import com.wayblink.ann.spark.builder.MergeSmall
 
 val config = ANNIndexConfig(
   M = 16,                       // Connections per node (default: 16)
@@ -125,7 +125,7 @@ val results = vectors.annSearch(
 For large datasets, control each stage independently:
 
 ```scala
-import com.company.ann.spark.builder._
+import com.wayblink.ann.spark.builder._
 
 // 1. Discover parquet files
 val files = FileDiscovery.discoverDataFiles(spark, "/data/vectors", "vector")
@@ -158,7 +158,7 @@ Then use the API as shown above.
 
 ```bash
 spark-submit \
-  --class com.company.ann.spark.examples.QuickStart \
+  --class com.wayblink.ann.spark.examples.QuickStart \
   --master local[4] \
   spark-integration/target/scala-2.12/spark-ann-integration-assembly.jar
 ```

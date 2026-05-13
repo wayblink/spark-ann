@@ -21,7 +21,7 @@ The JVM JAR is **not** bundled in the wheel. Provide it to Spark explicitly:
 pyspark --jars /path/to/spark-ann-integration-assembly.jar
 
 # From Maven (once published):
-pyspark --packages com.company:spark-ann-integration_2.12:0.1.0
+pyspark --packages com.wayblink:spark-ann-integration_2.12:0.1.0
 ```
 
 For `spark-submit`:

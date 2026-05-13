@@ -67,7 +67,7 @@ For the cluster-style run:
 spark-submit \
   --master "local[4]" \
   --jars $SPARK_ANN_JAR \
-  --class com.company.ann.spark.examples.QuickStart \
+  --class com.wayblink.ann.spark.examples.QuickStart \
   $SPARK_ANN_JAR
 ```
 

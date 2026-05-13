@@ -1,6 +1,6 @@
 ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / scalaVersion := "2.12.18"
-ThisBuild / organization := "com.company"
+ThisBuild / organization := "com.wayblink"
 
 // Maven publishing config. Override via env vars in CI; defaults publish
 // to a local repo at ~/.ivy2/local via `sbt publishLocal`. To publish to
@@ -137,5 +137,5 @@ lazy val apiServer = (project in file("api-server"))
       "com.typesafe.akka" %% "akka-http-testkit" % akkaHttpVersion % Test
     ),
     assembly / assemblyJarName := "spark-ann-api-server-assembly.jar",
-    assembly / mainClass := Some("com.company.ann.api.AnnApiServer")
+    assembly / mainClass := Some("com.wayblink.ann.api.AnnApiServer")
   )

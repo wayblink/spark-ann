@@ -5,8 +5,8 @@
 //   spark-shell --jars spark-integration/target/scala-2.12/spark-ann-integration-assembly.jar \
 //       -i examples/scala/02_batch_search.scala
 
-import com.company.ann.spark.api.ANNIndexAPI
-import com.company.ann.spark.api.ANNIndexConfig
+import com.wayblink.ann.spark.api.ANNIndexAPI
+import com.wayblink.ann.spark.api.ANNIndexConfig
 
 val dim = 32
 val nBase = 2000

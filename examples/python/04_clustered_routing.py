@@ -71,12 +71,12 @@ def main() -> None:
         # Use the directory-scan path via discover + group on the JVM
         # side; expose via the functional ANNIndexAPI bridge.
         jvm = spark.sparkContext._jvm
-        api = jvm.com.company.ann.spark.api.ANNIndexAPI
+        api = jvm.com.wayblink.ann.spark.api.ANNIndexAPI
         files = api.discoverDataFiles(spark._jsparkSession, data_root, "vector")
-        single_file = getattr(getattr(jvm.com.company.ann.spark.builder,
+        single_file = getattr(getattr(jvm.com.wayblink.ann.spark.builder,
                                        "SingleFile$"), "MODULE$")
         groups = api.groupFiles(files, single_file, 500000)
-        cfg = jvm.com.company.ann.spark.api.ANNIndexConfig.apply(
+        cfg = jvm.com.wayblink.ann.spark.api.ANNIndexConfig.apply(
             16, 200, single_file, 500000, 40, "euclidean"
         )
         meta = api.buildIndexFromFileGroups(

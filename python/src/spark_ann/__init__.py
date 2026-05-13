@@ -11,7 +11,7 @@ Spark:
 
     pyspark --jars /path/to/spark-ann-integration-assembly.jar
     # or
-    pyspark --packages com.company:spark-ann-integration_2.12:0.1.0
+    pyspark --packages com.wayblink:spark-ann-integration_2.12:0.1.0
 """
 
 from __future__ import annotations

@@ -123,7 +123,7 @@ class SparkEnvironmentTest extends AnyFunSuite with BeforeAndAfterAll {
   
   test("Project structure is correct") {
     // 验证模块依赖
-    val coreClass = Class.forName("com.company.ann.core.index.HNSWIndex")
+    val coreClass = Class.forName("com.wayblink.ann.core.index.HNSWIndex")
     assert(coreClass != null)
   }
   
@@ -147,7 +147,7 @@ class SparkEnvironmentTest extends AnyFunSuite with BeforeAndAfterAll {
 **实现** (core模块):
 ```scala
 // core/src/main/scala/testutil/TestDataGenerator.scala
-package com.company.ann.core.testutil
+package com.wayblink.ann.core.testutil
 
 object TestDataGenerator {
   
@@ -224,9 +224,9 @@ object TestDataGenerator {
 **Spark集成** (spark-integration模块):
 ```scala
 // spark-integration/src/main/scala/testutil/SparkTestData.scala
-package com.company.ann.spark.testutil
+package com.wayblink.ann.spark.testutil
 
-import com.company.ann.core.testutil.TestDataGenerator
+import com.wayblink.ann.core.testutil.TestDataGenerator
 import org.apache.spark.sql.{DataFrame, SparkSession}
 
 object SparkTestData {
@@ -359,7 +359,7 @@ class TestDataGeneratorTest extends AnyFunSuite {
 **核心接口设计** (core模块):
 ```scala
 // core/src/main/scala/index/HNSWIndex.scala
-package com.company.ann.core.index
+package com.wayblink.ann.core.index
 
 trait HNSWIndex {
   def dimension: Int
@@ -390,7 +390,7 @@ case class HNSWConfig(
 **基于hnswlib的实现**:
 ```scala
 // core/src/main/scala/index/HNSWLibIndex.scala
-package com.company.ann.core.index
+package com.wayblink.ann.core.index
 
 import com.github.jelmerk.knn.hnsw._
 import scala.collection.JavaConverters._
@@ -581,7 +581,7 @@ class HNSWIndexTest extends AnyFunSuite {
 **实现** (spark-integration模块):
 ```scala
 // spark-integration/src/main/scala/builder/FileDiscovery.scala
-package com.company.ann.spark.builder
+package com.wayblink.ann.spark.builder
 
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.sql.SparkSession
@@ -715,9 +715,9 @@ case class FileGroup(
 **实现** (spark-integration模块):
 ```scala
 // spark-integration/src/main/scala/builder/LocalIndexBuilder.scala
-package com.company.ann.spark.builder
+package com.wayblink.ann.spark.builder
 
-import com.company.ann.core.index.{HNSWLibIndex, HNSWConfig}
+import com.wayblink.ann.core.index.{HNSWLibIndex, HNSWConfig}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 
 object LocalIndexBuilder {
@@ -983,7 +983,7 @@ class LocalIndexBuilderTest extends AnyFunSuite with BeforeAndAfterAll {
 **实现** (core模块):
 ```scala
 // core/src/main/scala/index/BoundaryNodeSelector.scala
-package com.company.ann.core.index
+package com.wayblink.ann.core.index
 
 import scala.util.Random
 
@@ -1032,9 +1032,9 @@ case class BoundaryNode(
 **Spark集成**:
 ```scala
 // spark-integration/src/main/scala/builder/BoundaryNodesCollector.scala
-package com.company.ann.spark.builder
+package com.wayblink.ann.spark.builder
 
-import com.company.ann.core.index.{BoundaryNode, BoundaryNodeSelector}
+import com.wayblink.ann.core.index.{BoundaryNode, BoundaryNodeSelector}
 import org.apache.spark.sql.SparkSession
 
 object BoundaryNodesCollector {
@@ -1109,10 +1109,10 @@ case class GlobalBoundaryNode(
 **实现**:
 ```scala
 // spark-integration/src/main/scala/api/ANNDataFrameAPI.scala
-package com.company.ann.spark.api
+package com.wayblink.ann.spark.api
 
 import org.apache.spark.sql.DataFrame
-import com.company.ann.spark.search.ANNSearcher
+import com.wayblink.ann.spark.search.ANNSearcher
 
 /**
  * DataFrame扩展：提供annSearch方法
@@ -1195,8 +1195,8 @@ object QuickStart {
       .master("local[4]")
       .getOrCreate()
 
-    import com.company.ann.spark.api._
-    import com.company.ann.spark.builder._
+    import com.wayblink.ann.spark.api._
+    import com.wayblink.ann.spark.builder._
 
     // 1. 生成测试数据（模拟多个数据文件）
     println("Generating test data files...")
@@ -1287,7 +1287,7 @@ object QuickStart {
 **实现** (spark-sql-extension模块):
 ```scala
 // spark-sql-extension/src/main/scala/logical/ANNLogicalPlan.scala
-package com.company.ann.spark.sql.logical
+package com.wayblink.ann.spark.sql.logical
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 import org.apache.spark.sql.catalyst.plans.logical.{LeafNode, LogicalPlan}
@@ -1328,7 +1328,7 @@ case class ANNIndexScan(
 **实现**:
 ```scala
 // spark-sql-extension/src/main/scala/optimizer/ANNOptimizationRule.scala
-package com.company.ann.spark.sql.optimizer
+package com.wayblink.ann.spark.sql.optimizer
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions._
@@ -1391,11 +1391,11 @@ case class ANNOptimizationRule(spark: SparkSession) extends Rule[LogicalPlan] {
 **注册扩展**:
 ```scala
 // spark-sql-extension/src/main/scala/ANNSparkExtension.scala
-package com.company.ann.spark.sql
+package com.wayblink.ann.spark.sql
 
 import org.apache.spark.sql.SparkSessionExtensions
-import com.company.ann.spark.sql.optimizer.ANNOptimizationRule
-import com.company.ann.spark.sql.strategy.ANNIndexScanStrategy
+import com.wayblink.ann.spark.sql.optimizer.ANNOptimizationRule
+import com.wayblink.ann.spark.sql.strategy.ANNIndexScanStrategy
 
 class ANNSparkExtension extends (SparkSessionExtensions => Unit) {
   
@@ -1413,7 +1413,7 @@ class ANNSparkExtension extends (SparkSessionExtensions => Unit) {
     // 注册内置函数
     extensions.injectFunction(
       ("l2_distance", new ExpressionInfo(
-        "com.company.ann.spark.sql.expressions.L2Distance",
+        "com.wayblink.ann.spark.sql.expressions.L2Distance",
         "l2_distance",
         "l2_distance(vector1, vector2) - Calculate L2 distance"
       ),
@@ -1426,11 +1426,11 @@ class ANNSparkExtension extends (SparkSessionExtensions => Unit) {
 **使用方式**:
 ```scala
 // spark-defaults.conf
-spark.sql.extensions=com.company.ann.spark.sql.ANNSparkExtension
+spark.sql.extensions=com.wayblink.ann.spark.sql.ANNSparkExtension
 
 // 或代码中注册
 val spark = SparkSession.builder()
-  .config("spark.sql.extensions", "com.company.ann.spark.sql.ANNSparkExtension")
+  .config("spark.sql.extensions", "com.wayblink.ann.spark.sql.ANNSparkExtension")
   .getOrCreate()
 
 // 自动优化

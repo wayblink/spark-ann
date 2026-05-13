@@ -5,9 +5,9 @@
 //   spark-shell --jars spark-integration/target/scala-2.12/spark-ann-integration-assembly.jar \
 //       -i examples/scala/01_build_and_search.scala
 
-import com.company.ann.spark.api.ANNIndexAPI
-import com.company.ann.spark.api.ANNIndexConfig
-import com.company.ann.spark.builder.SingleFile
+import com.wayblink.ann.spark.api.ANNIndexAPI
+import com.wayblink.ann.spark.api.ANNIndexConfig
+import com.wayblink.ann.spark.builder.SingleFile
 
 val dim = 64
 val n = 1000

@@ -27,7 +27,7 @@ def active_spark() -> SparkSession:
             "classpath, e.g.:\n"
             "  pyspark --jars /path/to/spark-ann-integration-assembly.jar\n"
             "or:\n"
-            "  pyspark --packages com.company:spark-ann-integration_2.12:0.1.0"
+            "  pyspark --packages com.wayblink:spark-ann-integration_2.12:0.1.0"
         )
     return session
 
@@ -65,7 +65,7 @@ def to_jvm_float_array(values) -> Any:
 
 
 # Field order MUST match
-# com.company.ann.spark.api.ANNIndexConfig case-class apply(...):
+# com.wayblink.ann.spark.api.ANNIndexConfig case-class apply(...):
 #   (M, efConstruction, groupingStrategy, targetVectorsPerIndex,
 #    boundaryNodesPerIndex, distanceType)
 # A change there without updating this list silently drops fields.
@@ -102,7 +102,7 @@ def dict_to_config(config: Optional[Dict[str, Any]]) -> Any:
 
     j = jvm()
     grouping_name = merged["grouping_strategy"]
-    builder_pkg = j.com.company.ann.spark.builder
+    builder_pkg = j.com.wayblink.ann.spark.builder
     if grouping_name == "SingleFile":
         # Scala `case object` compiles to `<FQN>$.MODULE$` on the JVM.
         # Neither identifier is reachable via dotted attribute access in
@@ -117,7 +117,7 @@ def dict_to_config(config: Optional[Dict[str, Any]]) -> Any:
             "Use 'SingleFile' or 'MergeSmall'."
         )
 
-    return j.com.company.ann.spark.api.ANNIndexConfig.apply(
+    return j.com.wayblink.ann.spark.api.ANNIndexConfig.apply(
         int(merged["M"]),
         int(merged["ef_construction"]),
         grouping,

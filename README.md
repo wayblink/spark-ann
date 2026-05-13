@@ -57,8 +57,8 @@ Spark ANN provides scalable vector search with:
 ### Building an Index
 
 ```scala
-import com.company.ann.spark.api._
-import com.company.ann.spark.api.ANNDataFrameExtensions._
+import com.wayblink.ann.spark.api._
+import com.wayblink.ann.spark.api.ANNDataFrameExtensions._
 
 val spark = SparkSession.builder()
   .appName("ANN Quick Start")
@@ -215,8 +215,8 @@ spark-shell \
 
 Then in the shell:
 ```scala
-import com.company.ann.spark.api._
-import com.company.ann.spark.api.ANNDataFrameExtensions._
+import com.wayblink.ann.spark.api._
+import com.wayblink.ann.spark.api.ANNDataFrameExtensions._
 
 val vectors = Seq(
   (1L, Seq(0.1f, 0.2f, 0.3f, 0.4f)),
@@ -236,7 +236,7 @@ results.show()
 ```bash
 # Using fat JAR
 spark-submit \
-  --class com.company.ann.spark.examples.QuickStart \
+  --class com.wayblink.ann.spark.examples.QuickStart \
   --master local[4] \
   spark-integration/target/scala-2.12/spark-ann-integration-assembly.jar
 ```
@@ -261,8 +261,8 @@ sbt publishLocal
 Then add to your `build.sbt`:
 ```scala
 libraryDependencies ++= Seq(
-  "com.company" %% "spark-ann-core" % "0.1.0-SNAPSHOT",
-  "com.company" %% "spark-ann-integration" % "0.1.0-SNAPSHOT"
+  "com.wayblink" %% "spark-ann-core" % "0.1.0-SNAPSHOT",
+  "com.wayblink" %% "spark-ann-integration" % "0.1.0-SNAPSHOT"
 )
 ```
 
@@ -273,7 +273,7 @@ libraryDependencies ++= Seq(
 Import to add ANN methods directly to DataFrames:
 
 ```scala
-import com.company.ann.spark.api.ANNDataFrameExtensions._
+import com.wayblink.ann.spark.api.ANNDataFrameExtensions._
 
 df.buildANNIndex(vectorColumn, outputPath)
 df.annSearch(indexPath, queryVector, k)
@@ -285,7 +285,7 @@ df.annBatchSearch(indexPath, queries, queryVectorColumn, k)
 Use `ANNIndexAPI` for explicit operations:
 
 ```scala
-import com.company.ann.spark.api.ANNIndexAPI
+import com.wayblink.ann.spark.api.ANNIndexAPI
 
 ANNIndexAPI.buildIndex(df, vectorColumn, outputPath, config)
 ANNIndexAPI.search(spark, indexPath, queryVector, k)
@@ -326,7 +326,7 @@ ANNIndexAPI.groupFiles(files, strategy)
 For large datasets with more control over file grouping:
 
 ```scala
-import com.company.ann.spark.builder.{FileDiscovery, FileGroupingStrategy, MergeSmall}
+import com.wayblink.ann.spark.builder.{FileDiscovery, FileGroupingStrategy, MergeSmall}
 
 // Discover data files
 val dataFiles = FileDiscovery.discoverDataFiles(spark, "/data/vectors", "vector")
@@ -361,7 +361,7 @@ The JVM JAR is **not** bundled in the wheel — pass it to Spark via
 ```bash
 pyspark --jars spark-integration/target/scala-2.12/spark-ann-integration-assembly.jar
 # or once published:
-pyspark --packages com.company:spark-ann-integration_2.12:0.1.0
+pyspark --packages com.wayblink:spark-ann-integration_2.12:0.1.0
 ```
 
 ### Functional API

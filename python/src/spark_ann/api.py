@@ -1,6 +1,6 @@
 """Functional (P1) spark-ann API.
 
-Thin Py4J wrappers over ``com.company.ann.spark.api.ANNIndexAPI``. No
+Thin Py4J wrappers over ``com.wayblink.ann.spark.api.ANNIndexAPI``. No
 business logic in Python — the JVM side already provides everything; we
 just translate Python types to JVM types and DataFrame handles back to
 PySpark.
@@ -29,7 +29,7 @@ def build_ann_index(
     accessed via attribute syntax (e.g. ``meta.totalVectors()``,
     ``meta.dimension()``).
     """
-    api = jvm().com.company.ann.spark.api.ANNIndexAPI
+    api = jvm().com.wayblink.ann.spark.api.ANNIndexAPI
     cfg = dict_to_config(config)
     return api.buildIndex(df._jdf, vector_column, output_path, cfg)
 
@@ -46,7 +46,7 @@ def ann_search(
 
     Returns a DataFrame with columns ``(id, distance, indexId)``.
     """
-    api = jvm().com.company.ann.spark.api.ANNIndexAPI
+    api = jvm().com.wayblink.ann.spark.api.ANNIndexAPI
     jvec = to_jvm_float_array(query_vector)
     jdf = api.search(spark._jsparkSession, index_path, jvec, k, nprobe, ef)
     return DataFrame(jdf, spark)
@@ -67,7 +67,7 @@ def ann_batch_search(
     cache). Returns a DataFrame with columns
     ``(queryIndex, id, distance, indexId)``.
     """
-    api = jvm().com.company.ann.spark.api.ANNIndexAPI
+    api = jvm().com.wayblink.ann.spark.api.ANNIndexAPI
     jdf = api.batchSearch(
         spark._jsparkSession,
         index_path,
@@ -87,7 +87,7 @@ def load_searcher(spark: SparkSession, index_path: str) -> Any:
     across multiple queries without paying the metadata load on each
     search.
     """
-    return jvm().com.company.ann.spark.api.ANNIndexAPI.loadSearcher(
+    return jvm().com.wayblink.ann.spark.api.ANNIndexAPI.loadSearcher(
         spark._jsparkSession, index_path
     )
 
@@ -96,6 +96,6 @@ def discover_data_files(
     spark: SparkSession, data_path: str, vector_column: str
 ) -> Any:
     """List parquet files in ``data_path`` with vector counts, JVM array."""
-    return jvm().com.company.ann.spark.api.ANNIndexAPI.discoverDataFiles(
+    return jvm().com.wayblink.ann.spark.api.ANNIndexAPI.discoverDataFiles(
         spark._jsparkSession, data_path, vector_column
     )
