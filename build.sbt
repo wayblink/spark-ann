@@ -2,6 +2,30 @@ ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / scalaVersion := "2.12.18"
 ThisBuild / organization := "com.company"
 
+// Maven publishing config. Override via env vars in CI; defaults publish
+// to a local repo at ~/.ivy2/local via `sbt publishLocal`. To publish to
+// a Nexus/Maven Central staging server set the four MAVEN_* env vars.
+ThisBuild / publishMavenStyle := true
+ThisBuild / publishTo := {
+  val nexus = sys.env.get("MAVEN_RELEASE_URL")
+  val snapshots = sys.env.get("MAVEN_SNAPSHOT_URL")
+  if (isSnapshot.value) snapshots.map("snapshots" at _).orElse(Some(Resolver.mavenLocal))
+  else nexus.map("releases" at _).orElse(Some(Resolver.mavenLocal))
+}
+ThisBuild / credentials ++= {
+  (for {
+    user <- sys.env.get("MAVEN_USERNAME")
+    pass <- sys.env.get("MAVEN_PASSWORD")
+    host <- sys.env.get("MAVEN_HOST")
+  } yield Credentials("Sonatype Nexus Repository Manager", host, user, pass)).toSeq
+}
+ThisBuild / licenses := Seq("Proprietary" -> url("https://example.com/license"))
+ThisBuild / homepage := Some(url("https://github.com/your-org/spark-ann"))
+ThisBuild / scmInfo := Some(ScmInfo(
+  url("https://github.com/your-org/spark-ann"),
+  "scm:git:git@github.com:your-org/spark-ann.git"
+))
+
 val sparkVersion = "3.5.0"
 val hnswlibVersion = "1.1.0"
 val json4sVersion = "3.7.0-M11"  // Match Spark 3.5.0's json4s version

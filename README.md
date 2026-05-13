@@ -343,6 +343,66 @@ val metadata = ANNIndexAPI.buildIndexFromFileGroups(
 )
 ```
 
+## PySpark
+
+A Python wrapper is available as the `pyspark-ann` PyPI package. It is a
+thin Py4J bridge over the Scala API — no logic duplicated in Python, all
+distributed work runs on the JVM.
+
+### Install
+
+```bash
+pip install pyspark-ann
+```
+
+The JVM JAR is **not** bundled in the wheel — pass it to Spark via
+`--jars` or `--packages`:
+
+```bash
+pyspark --jars spark-integration/target/scala-2.12/spark-ann-integration-assembly.jar
+# or once published:
+pyspark --packages com.company:spark-ann-integration_2.12:0.1.0
+```
+
+### Functional API
+
+```python
+import spark_ann
+from pyspark.sql import SparkSession
+
+spark = SparkSession.builder.master("local[4]").getOrCreate()
+
+df = spark.createDataFrame(
+    [(i, [0.1 * i] * 128) for i in range(10_000)],
+    ["id", "vector"],
+)
+
+meta = spark_ann.build_ann_index(
+    df, vector_column="vector", output_path="/tmp/idx",
+    config={"M": 16, "ef_construction": 200, "distance_type": "cosine"},
+)
+
+results = spark_ann.ann_search(spark, "/tmp/idx", [0.5] * 128, k=10)
+results.show()
+```
+
+### DataFrame methods (P2)
+
+```python
+import spark_ann  # installs methods on pyspark.sql.DataFrame
+
+# Flat:
+df.build_ann_index("vector", "/tmp/idx")
+df.ann_search("/tmp/idx", [0.5] * 128, k=10)
+
+# Accessor namespace:
+df.ann.build_index("vector", "/tmp/idx")
+df.ann.search("/tmp/idx", [0.5] * 128, k=10)
+```
+
+See [python/README.md](python/README.md) for full documentation and
+configuration reference.
+
 ## REST API Server
 
 ### Starting the Server
