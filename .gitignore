@@ -26,3 +26,13 @@ native/cpp/build/
 native/jni/*.so
 native/jni/*.dylib
 native/jni/*.dll
+
+# Python (pyspark-ann)
+python/build/
+python/dist/
+python/src/*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
