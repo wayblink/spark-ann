@@ -1,5 +1,11 @@
 # Spark-ANN TODO
 
+> **Bundle contract:** the on-disk format is now formalised in
+> [`docs/BUNDLE_SPEC.md`](docs/BUNDLE_SPEC.md). Pattern-B online
+> serving via the api-server consumes that contract directly — no
+> Spark needed at serve time. See the "Online Serving" section of
+> the root README for a curl walkthrough.
+
 ## High Priority
 
 ### 1. Index building runs on driver, not distributed
@@ -40,11 +46,9 @@
 - **Action:** Enforce `max-loaded-indexes` in `IndexManager`. Add memory estimation or index size checks. Consider adding backpressure via Akka stream throttling or semaphores.
 - Files: `IndexManager.scala`, `application.conf`
 
-### 6. String-based error matching in routes
-- `SearchRoutes` routes errors by checking `error.contains("not found")`, `error.contains("dimension")`, etc.
-- If error message wording changes, HTTP status codes silently break
-- **Action:** Replace with a sealed trait error hierarchy (e.g., `IndexNotFound`, `DimensionMismatch`, `SearchFailed`) and pattern match on types instead of strings.
-- Files: `SearchRoutes.scala:42-48`, `SearchService.scala`
+### 6. ~~String-based error matching in routes~~ ✅ Resolved (commit c3137d0)
+- ~~`SearchRoutes` routes errors by checking `error.contains("not found")`, `error.contains("dimension")`, etc.~~
+- **Resolution**: Replaced with sealed `ApiError` ADT in `com.wayblink.ann.api.error`. Service-layer methods return `Either[ApiError, _]`; routes map via `ApiError.toHttpStatus`. Response codes changed to snake_case (`index_not_found` etc).
 
 ### 7. Index reloaded from disk on every search call
 - `ANNDataFrameOps.annSearch` calls `ANNSearcher.load(...)` on every invocation, deserializing the entire index from disk
@@ -72,20 +76,18 @@
 - **Action:** Replace `println` with SLF4J logger calls at appropriate levels (info/debug).
 
 ### 11. TOCTOU race in IndexManager
-- `loadIndex` and `createIndex` check `containsKey` then later call `put` — another thread could insert the same key between the two calls
-- **Action:** Use `putIfAbsent` atomically instead of check-then-put.
-- Files: `IndexManager.scala:41-43`, `IndexManager.scala:78-79`
+### 11. ~~TOCTOU race in IndexManager~~ ✅ Resolved (commit c3137d0)
+- ~~`loadIndex` and `createIndex` check `containsKey` then later call `put` — another thread could insert the same key between the two calls~~
+- **Resolution**: every state-change uses `ConcurrentHashMap.putIfAbsent` and inspects the return value; saveIndex uses `replace(old, updated)` for the metadata-path refresh.
 
 ### 12. Implicit return usage
 - Several methods use early `return` statements inside methods (e.g., `SearchService.search:73`, `SearchService.multiSearch:119,133,138,143`)
 - `return` has surprising semantics inside lambdas/closures in Scala and is considered un-idiomatic
 - **Action:** Refactor to `if`/`else` chains or `Either` chaining with `flatMap`.
 
-### 13. validateSearchRequest is not a proper Akka directive
-- `SearchRoutes.validateSearchRequest` calls `complete(...)` in branches but returns `Directive0`
-- Works but is semantically confusing
-- **Action:** Use `reject` with a custom rejection, or change the return type to `Route`.
-- Files: `SearchRoutes.scala:192-204`
+### 13. ~~validateSearchRequest is not a proper Akka directive~~ ✅ Resolved (commit c3137d0)
+- ~~`SearchRoutes.validateSearchRequest` calls `complete(...)` in branches but returns `Directive0`~~
+- **Resolution**: now `validateSearchParams` returns a `Directive0` that emits `ValidationRejection(reason)` on failure; route-level `handleRejections` maps the rejection to a typed 400 with `ApiError.InvalidRequest`.
 
 ### 14. Code hygiene
 - `HNSWConfig.M` uses uppercase naming, violating Scala conventions and potentially conflicting with pattern matching

@@ -60,6 +60,22 @@ spark-shell --jars $SPARK_ANN_JAR -i examples/scala/01_build_and_search.scala
 spark-shell --jars $SPARK_ANN_JAR -i examples/scala/02_batch_search.scala
 ```
 
+## Online serving (Pattern B)
+
+`examples/shell/06_bundle_online_serving.sh` is a runnable smoke test
+that builds a bundle via `spark-shell`, starts the api-server (loaded
+via `--jars` of the api-server fat JAR), POSTs the bundle path, and
+runs a search. Requires `sbt sparkIntegration/assembly` and
+`sbt apiServer/assembly` first.
+
+```bash
+sbt sparkIntegration/assembly apiServer/assembly
+examples/shell/06_bundle_online_serving.sh
+```
+
+The on-disk bundle layout is documented in
+[`docs/BUNDLE_SPEC.md`](../docs/BUNDLE_SPEC.md).
+
 ## spark-submit
 
 For the cluster-style run:

@@ -405,6 +405,13 @@ configuration reference.
 
 ## REST API Server
 
+> **Pattern-B online serving** is now supported: the api-server can
+> load bundle directories produced by the offline Spark builder
+> directly, no Spark needed at serve time. The on-disk contract is
+> documented in [`docs/BUNDLE_SPEC.md`](docs/BUNDLE_SPEC.md).
+> Section [Online Serving (Pattern B)](#online-serving-pattern-b)
+> below has a runnable walkthrough.
+
 ### Starting the Server
 
 ```bash
@@ -491,6 +498,74 @@ curl -X POST http://localhost:8080/api/v1/search/batch \
     ]
   }'
 ```
+
+### Online Serving (Pattern B)
+
+The api-server can serve bundles produced by the offline Spark builder
+without re-importing or re-indexing data. This is the "pattern B"
+deployment shape: shared on-disk contract, independent runtimes.
+
+**Step 1 — build a bundle offline:**
+
+```scala
+import com.wayblink.ann.spark.api._
+import com.wayblink.ann.bundle.ANNIndexConfig
+
+val metadata = vectors.buildANNIndex(
+  vectorColumn = "embedding",
+  outputPath   = "/data/bundles/products-2026-05-14",
+  config       = ANNIndexConfig(pk = Some("product_id"))
+)
+```
+
+The output directory matches the layout in `docs/BUNDLE_SPEC.md` —
+`ann_index.json`, `local/*.hnsw`, `global/global_routing.hnsw`,
+`boundary_mapping.json`.
+
+**Step 2 — load the bundle into a running api-server:**
+
+```bash
+curl -X POST http://localhost:8080/api/v1/indexes/bundle \
+  -H "Content-Type: application/json" \
+  -d '{
+    "indexId": "products",
+    "bundlePath": "/data/bundles/products-2026-05-14"
+  }'
+```
+
+The server eagerly loads every local HNSW + the global routing index,
+exposes the bundle alongside any flat single-`.hnsw` indexes, and
+becomes ready for queries.
+
+**Step 3 — search through the bundle:**
+
+```bash
+curl -X POST http://localhost:8080/api/v1/indexes/products/search \
+  -H "Content-Type: application/json" \
+  -d '{"vector": [0.15, 0.25, ...], "k": 10}'
+```
+
+The api-server runs the same routing logic the offline Spark
+batchSearch uses (via the shared `index-bundle` module). When `pk` was
+set at build time, the `id` field in each result IS the user's product
+id — no offset translation needed.
+
+**List loaded indexes (mixed flat + bundle):**
+
+```bash
+curl http://localhost:8080/api/v1/indexes
+```
+
+Each entry carries a `kind` field (`"flat"` or `"bundle"`) so clients
+can branch cleanly.
+
+**Implementation pointers**
+
+- Reference reader: `index-bundle/src/main/scala/com/wayblink/ann/bundle/BundleReader.scala`
+- Routing function: `index-bundle/src/main/scala/com/wayblink/ann/bundle/Routing.scala`
+- Spec contract: [`docs/BUNDLE_SPEC.md`](docs/BUNDLE_SPEC.md)
+- Any future C++ / Rust / GPU server can replace this api-server by
+  implementing the same contract.
 
 ## Docker Deployment
 
