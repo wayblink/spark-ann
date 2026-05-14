@@ -2,6 +2,8 @@
 
 A distributed Approximate Nearest Neighbor (ANN) index system built on Apache Spark, using the HNSW algorithm for efficient vector similarity search.
 
+> **新用户 / New users**: read [`docs/GETSTART.md`](docs/GETSTART.md) first — 10-minute walkthrough covering Scala, PySpark, and Docker paths.
+
 ## Overview
 
 Spark ANN provides scalable vector search with:
