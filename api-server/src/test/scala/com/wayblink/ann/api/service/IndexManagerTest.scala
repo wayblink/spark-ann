@@ -1,5 +1,6 @@
 package com.wayblink.ann.api.service
 
+import com.wayblink.ann.api.error.ApiError
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.BeforeAndAfterEach
@@ -34,7 +35,7 @@ class IndexManagerTest extends AnyFunSuite with Matchers with BeforeAndAfterEach
     val result = indexManager.createIndex("test-index", 3, vectors)
 
     result.isLeft shouldBe true
-    result.left.get should include("already exists")
+    result.left.get shouldBe a [ApiError.IndexAlreadyExists]
   }
 
   test("getIndex should return None for non-existent index") {
@@ -88,7 +89,7 @@ class IndexManagerTest extends AnyFunSuite with Matchers with BeforeAndAfterEach
     val result = indexManager.addVectors("non-existent", Seq((1L, Array(0.1f, 0.2f, 0.3f))))
 
     result.isLeft shouldBe true
-    result.left.get should include("not found")
+    result.left.get shouldBe a [ApiError.IndexNotFound]
   }
 
   test("indexCount should return correct count") {

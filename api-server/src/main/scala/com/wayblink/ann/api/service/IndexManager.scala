@@ -1,18 +1,17 @@
 package com.wayblink.ann.api.service
 
+import com.wayblink.ann.api.error.ApiError
+import com.wayblink.ann.bundle.{ANNIndexMetadata, BundleError, BundleReader}
 import com.wayblink.ann.core.index.{HNSWConfig, HNSWLibIndex}
 
+import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
 import scala.collection.JavaConverters._
 
 /**
- * Metadata about a loaded index.
- *
- * @param indexId    Unique identifier for the index
- * @param index      The HNSW index instance
- * @param indexPath  Path where the index is stored (if loaded from disk)
- * @param distanceType Distance metric used
- * @param loadedAt   Timestamp when the index was loaded
+ * Metadata about a single flat HNSW index loaded into memory. Backwards-
+ * compatible payload for the legacy `POST /indexes` endpoint that
+ * accepts a single `.hnsw` file path or an inline vector list.
  */
 case class LoadedIndexInfo(
   indexId: String,
@@ -23,62 +22,92 @@ case class LoadedIndexInfo(
 )
 
 /**
- * Thread-safe manager for in-memory HNSW indexes.
- * Provides operations to load, unload, and query indexes.
+ * Metadata about a loaded bundle (pattern B). All local indexes are
+ * eagerly loaded — the api-server is the canonical pattern-B online
+ * server and is expected to hold its full bundle resident.
+ */
+case class LoadedBundleInfo(
+  indexId: String,
+  bundlePath: String,
+  metadata: ANNIndexMetadata,
+  localIndexes: Map[String, HNSWLibIndex],
+  globalIndex: Option[HNSWLibIndex],
+  boundaryMap: Array[String],
+  loadedAt: Long = System.currentTimeMillis()
+) {
+  def distanceType: String = metadata.config.distanceType
+  def algorithmId: String  = metadata.config.algorithm.id
+  def dimension: Int       = metadata.dimension
+  def totalVectors: Long   = metadata.totalVectors
+}
+
+/**
+ * Lookup result spanning both index modes, so route handlers can
+ * dispatch with a single `match` instead of probing two maps.
+ */
+sealed trait IndexEntry
+object IndexEntry {
+  final case class Flat(info: LoadedIndexInfo) extends IndexEntry
+  final case class Bundle(info: LoadedBundleInfo) extends IndexEntry
+}
+
+/**
+ * Thread-safe manager for in-memory indexes.
+ *
+ * Two storage backends sit side-by-side:
+ *  - `flatIndexes`   — single-file `.hnsw` indexes (legacy; create-from-vectors)
+ *  - `bundleIndexes` — multi-local-index bundles (pattern B; loaded from disk)
+ *
+ * Identifiers are unique across both backends; loading a flat with id
+ * "x" then a bundle with id "x" returns IndexAlreadyExists. The
+ * lookup APIs (`getEntry`, `listEntries`) probe both backends.
+ *
+ * Concurrency: every state-change uses ConcurrentHashMap.putIfAbsent
+ * so the historical TOCTOU window between containsKey and put is
+ * gone (todo.md #11).
  */
 class IndexManager {
 
-  private val indexes = new ConcurrentHashMap[String, LoadedIndexInfo]()
+  private val flatIndexes   = new ConcurrentHashMap[String, LoadedIndexInfo]()
+  private val bundleIndexes = new ConcurrentHashMap[String, LoadedBundleInfo]()
 
-  /**
-   * Load an index from disk.
-   *
-   * @param indexId   Unique identifier for the index
-   * @param indexPath Path to the index file
-   * @return Either an error message or the loaded index info
-   */
-  def loadIndex(indexId: String, indexPath: String): Either[String, LoadedIndexInfo] = {
-    if (indexes.containsKey(indexId)) {
-      return Left(s"Index '$indexId' already exists")
+  // ── Flat-index API (legacy) ──────────────────────────────────────────
+
+  def loadIndex(indexId: String, indexPath: String): Either[ApiError, LoadedIndexInfo] = {
+    if (bundleIndexes.containsKey(indexId)) {
+      return Left(ApiError.IndexAlreadyExists(indexId))
     }
-
     try {
       val index = HNSWLibIndex.load(indexPath)
+      // distanceType from the .hnsw.meta sidecar would be ideal, but
+      // HNSWLibIndex.load doesn't currently expose it post-load.
+      // TODO(spark-ann/#future): plumb distanceType through
+      //   HNSWLibIndex so this default goes away.
       val info = LoadedIndexInfo(
         indexId = indexId,
         index = index,
         indexPath = Some(indexPath),
-        distanceType = "euclidean" // TODO: read from metadata
+        distanceType = "euclidean"
       )
-      indexes.put(indexId, info)
-      Right(info)
+      val existing = flatIndexes.putIfAbsent(indexId, info)
+      if (existing != null) Left(ApiError.IndexAlreadyExists(indexId))
+      else Right(info)
     } catch {
       case e: Exception =>
-        Left(s"Failed to load index from '$indexPath': ${e.getMessage}")
+        Left(ApiError.InternalFailure(s"Failed to load index from '$indexPath': ${e.getMessage}"))
     }
   }
 
-  /**
-   * Create a new index from vectors.
-   *
-   * @param indexId        Unique identifier for the index
-   * @param dimension      Vector dimension
-   * @param vectors        Vectors to add (id, vector pairs)
-   * @param config         HNSW configuration
-   * @param distanceType   Distance metric ("euclidean" or "cosine")
-   * @return Either an error message or the created index info
-   */
   def createIndex(
     indexId: String,
     dimension: Int,
     vectors: Seq[(Long, Array[Float])],
     config: HNSWConfig = HNSWConfig(),
     distanceType: String = "euclidean"
-  ): Either[String, LoadedIndexInfo] = {
-    if (indexes.containsKey(indexId)) {
-      return Left(s"Index '$indexId' already exists")
+  ): Either[ApiError, LoadedIndexInfo] = {
+    if (bundleIndexes.containsKey(indexId)) {
+      return Left(ApiError.IndexAlreadyExists(indexId))
     }
-
     try {
       val maxElements = math.max(config.maxElements, vectors.size)
       val adjustedConfig = config.copy(maxElements = maxElements)
@@ -91,108 +120,137 @@ class IndexManager {
         indexPath = None,
         distanceType = distanceType
       )
-      indexes.put(indexId, info)
-      Right(info)
+      val existing = flatIndexes.putIfAbsent(indexId, info)
+      if (existing != null) Left(ApiError.IndexAlreadyExists(indexId))
+      else Right(info)
     } catch {
       case e: Exception =>
-        Left(s"Failed to create index: ${e.getMessage}")
+        Left(ApiError.InternalFailure(s"Failed to create index: ${e.getMessage}"))
     }
   }
 
-  /**
-   * Get an index by ID.
-   */
-  def getIndex(indexId: String): Option[LoadedIndexInfo] = {
-    Option(indexes.get(indexId))
-  }
+  def getIndex(indexId: String): Option[LoadedIndexInfo] =
+    Option(flatIndexes.get(indexId))
 
-  /**
-   * List all loaded indexes.
-   */
-  def listIndexes(): Seq[LoadedIndexInfo] = {
-    indexes.values().asScala.toSeq
-  }
+  def listIndexes(): Seq[LoadedIndexInfo] =
+    flatIndexes.values().asScala.toSeq
 
-  /**
-   * Unload an index from memory.
-   *
-   * @param indexId Index to unload
-   * @return true if the index was unloaded, false if it didn't exist
-   */
-  def unloadIndex(indexId: String): Boolean = {
-    indexes.remove(indexId) != null
-  }
+  def unloadIndex(indexId: String): Boolean =
+    flatIndexes.remove(indexId) != null || bundleIndexes.remove(indexId) != null
 
-  /**
-   * Save an index to disk.
-   *
-   * @param indexId Index to save
-   * @param path    Path to save to
-   * @return Either an error message or success
-   */
-  def saveIndex(indexId: String, path: String): Either[String, Unit] = {
-    getIndex(indexId) match {
+  def saveIndex(indexId: String, path: String): Either[ApiError, Unit] = {
+    Option(flatIndexes.get(indexId)) match {
       case Some(info) =>
         try {
           info.index.save(path)
-          // Update the index info with the new path
           val updated = info.copy(indexPath = Some(path))
-          indexes.put(indexId, updated)
+          // Race-tolerant: only persist the path update if the entry
+          // hasn't been swapped out from under us in the meantime.
+          flatIndexes.replace(indexId, info, updated)
           Right(())
         } catch {
-          case e: Exception =>
-            Left(s"Failed to save index: ${e.getMessage}")
+          case e: Exception => Left(ApiError.InternalFailure(s"Failed to save index: ${e.getMessage}"))
         }
-      case None =>
-        Left(s"Index '$indexId' not found")
+      case None => Left(ApiError.IndexNotFound(indexId))
     }
   }
 
-  /**
-   * Add vectors to an existing index.
-   *
-   * @param indexId Index to add vectors to
-   * @param vectors Vectors to add
-   * @return Either an error message or the updated index info
-   */
-  def addVectors(indexId: String, vectors: Seq[(Long, Array[Float])]): Either[String, LoadedIndexInfo] = {
-    getIndex(indexId) match {
+  def addVectors(indexId: String, vectors: Seq[(Long, Array[Float])]): Either[ApiError, LoadedIndexInfo] = {
+    Option(flatIndexes.get(indexId)) match {
       case Some(info) =>
         try {
           info.index.addAll(vectors)
           Right(info)
         } catch {
-          case e: Exception =>
-            Left(s"Failed to add vectors: ${e.getMessage}")
+          case e: Exception => Left(ApiError.InternalFailure(s"Failed to add vectors: ${e.getMessage}"))
         }
-      case None =>
-        Left(s"Index '$indexId' not found")
+      case None => Left(ApiError.IndexNotFound(indexId))
     }
   }
 
-  /**
-   * Get the total number of loaded indexes.
-   */
-  def indexCount: Int = indexes.size()
+  // ── Bundle API (pattern B) ────────────────────────────────────────────
 
   /**
-   * Get the total number of vectors across all loaded indexes.
+   * Load a bundle from disk. Detects bundle-vs-flat by structure: the
+   * given path must be a directory containing `ann_index.json`. Loads
+   * the metadata, every local HNSW, the optional global routing HNSW,
+   * and the boundary map.
+   *
+   * Errors:
+   *  - IndexAlreadyExists when the indexId is taken on either side
+   *  - BundleNotFound / InvalidBundle for structural problems
+   *  - InternalFailure for I/O surprises
    */
+  def loadBundle(indexId: String, bundlePath: String): Either[ApiError, LoadedBundleInfo] = {
+    if (flatIndexes.containsKey(indexId) || bundleIndexes.containsKey(indexId)) {
+      return Left(ApiError.IndexAlreadyExists(indexId))
+    }
+    val path = Paths.get(bundlePath)
+    if (!BundleReader.isBundle(path)) {
+      return Left(ApiError.BundleNotFound(bundlePath))
+    }
+    BundleReader.loadMetadata(path) match {
+      case Left(BundleError.BundleNotFound(p))     => Left(ApiError.BundleNotFound(p))
+      case Left(BundleError.InvalidBundle(p, why)) => Left(ApiError.InvalidBundle(p, why))
+      case Left(BundleError.UnknownVersion(f, s))  =>
+        Left(ApiError.InvalidBundle(bundlePath, s"unknown version $f (max supported $s)"))
+      case Left(BundleError.UnknownAlgorithm(id))  =>
+        Left(ApiError.InvalidBundle(bundlePath, s"unknown algorithm '$id'"))
+      case Left(BundleError.IoFailure(p, m))       =>
+        Left(ApiError.InternalFailure(s"I/O failure reading $p: $m"))
+      case Right(metadata) =>
+        try {
+          val locals  = BundleReader.loadAllLocalIndexes(metadata)
+          val global  = BundleReader.loadGlobalIndex(metadata)
+          val mapping = BundleReader.loadBoundaryMap(path, metadata)
+          val info = LoadedBundleInfo(
+            indexId      = indexId,
+            bundlePath   = bundlePath,
+            metadata     = metadata,
+            localIndexes = locals,
+            globalIndex  = global,
+            boundaryMap  = mapping
+          )
+          val existing = bundleIndexes.putIfAbsent(indexId, info)
+          if (existing != null) Left(ApiError.IndexAlreadyExists(indexId))
+          else Right(info)
+        } catch {
+          case e: Exception =>
+            Left(ApiError.InternalFailure(s"Failed to load bundle: ${e.getMessage}"))
+        }
+    }
+  }
+
+  def getBundle(indexId: String): Option[LoadedBundleInfo] =
+    Option(bundleIndexes.get(indexId))
+
+  def listBundles(): Seq[LoadedBundleInfo] =
+    bundleIndexes.values().asScala.toSeq
+
+  // ── Unified lookup ────────────────────────────────────────────────────
+
+  def getEntry(indexId: String): Option[IndexEntry] = {
+    val flat = Option(flatIndexes.get(indexId)).map(IndexEntry.Flat)
+    flat.orElse(Option(bundleIndexes.get(indexId)).map(IndexEntry.Bundle))
+  }
+
+  def listEntries(): Seq[IndexEntry] =
+    listIndexes().map(IndexEntry.Flat) ++ listBundles().map(IndexEntry.Bundle)
+
+  // ── Aggregates ───────────────────────────────────────────────────────
+
+  def indexCount: Int = flatIndexes.size() + bundleIndexes.size()
+
   def totalVectors: Long = {
-    indexes.values().asScala.map(_.index.size.toLong).sum
+    val flatTotal: Long = flatIndexes.values().asScala.map(_.index.size.toLong).sum
+    val bundleTotal: Long = bundleIndexes.values().asScala.map(_.totalVectors).sum
+    flatTotal + bundleTotal
   }
 
-  /**
-   * Check if an index exists.
-   */
-  def exists(indexId: String): Boolean = {
-    indexes.containsKey(indexId)
-  }
+  def exists(indexId: String): Boolean =
+    flatIndexes.containsKey(indexId) || bundleIndexes.containsKey(indexId)
 }
 
 object IndexManager {
-  /**
-   * Create a new IndexManager instance.
-   */
   def apply(): IndexManager = new IndexManager()
 }

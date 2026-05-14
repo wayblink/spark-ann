@@ -96,7 +96,7 @@ class ApiRoutesTest extends AnyFunSuite with Matchers with ScalatestRouteTest wi
     Post("/api/v1/indexes", request) ~> apiRoutes.routes ~> check {
       status shouldBe StatusCodes.Conflict
       val response = responseAs[ErrorResponse]
-      response.error shouldBe "IndexAlreadyExists"
+      response.error shouldBe "index_already_exists"
     }
   }
 
@@ -116,7 +116,7 @@ class ApiRoutesTest extends AnyFunSuite with Matchers with ScalatestRouteTest wi
     Get("/api/v1/indexes/non-existent") ~> apiRoutes.routes ~> check {
       status shouldBe StatusCodes.NotFound
       val response = responseAs[ErrorResponse]
-      response.error shouldBe "IndexNotFound"
+      response.error shouldBe "index_not_found"
     }
   }
 
@@ -179,7 +179,7 @@ class ApiRoutesTest extends AnyFunSuite with Matchers with ScalatestRouteTest wi
     Post("/api/v1/indexes/non-existent/search", request) ~> apiRoutes.routes ~> check {
       status shouldBe StatusCodes.NotFound
       val response = responseAs[ErrorResponse]
-      response.error shouldBe "IndexNotFound"
+      response.error shouldBe "index_not_found"
     }
   }
 
@@ -194,7 +194,7 @@ class ApiRoutesTest extends AnyFunSuite with Matchers with ScalatestRouteTest wi
     Post("/api/v1/indexes/test-index/search", request) ~> apiRoutes.routes ~> check {
       status shouldBe StatusCodes.UnprocessableEntity
       val response = responseAs[ErrorResponse]
-      response.error shouldBe "DimensionMismatch"
+      response.error shouldBe "dimension_mismatch"
     }
   }
 
@@ -247,7 +247,7 @@ class ApiRoutesTest extends AnyFunSuite with Matchers with ScalatestRouteTest wi
     Post("/api/v1/indexes/test-index/search", request) ~> apiRoutes.routes ~> check {
       status shouldBe StatusCodes.BadRequest
       val response = responseAs[ErrorResponse]
-      response.error shouldBe "InvalidParameter"
+      response.error shouldBe "invalid_request"
     }
   }
 
@@ -262,7 +262,7 @@ class ApiRoutesTest extends AnyFunSuite with Matchers with ScalatestRouteTest wi
     Post("/api/v1/indexes/test-index/search", request) ~> apiRoutes.routes ~> check {
       status shouldBe StatusCodes.BadRequest
       val response = responseAs[ErrorResponse]
-      response.error shouldBe "InvalidVector"
+      response.error shouldBe "invalid_request"
     }
   }
 }

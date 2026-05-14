@@ -1,5 +1,6 @@
 package com.wayblink.ann.api.service
 
+import com.wayblink.ann.api.error.ApiError
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.BeforeAndAfterEach
@@ -41,7 +42,7 @@ class SearchServiceTest extends AnyFunSuite with Matchers with BeforeAndAfterEac
     val result = searchService.search("non-existent", Array(0.0f, 0.0f, 0.0f), k = 3)
 
     result.isLeft shouldBe true
-    result.left.get should include("not found")
+    result.left.get shouldBe a [ApiError.IndexNotFound]
   }
 
   test("search should fail for dimension mismatch") {
@@ -50,7 +51,7 @@ class SearchServiceTest extends AnyFunSuite with Matchers with BeforeAndAfterEac
     val result = searchService.search("test-index", Array(0.0f, 0.0f), k = 3)
 
     result.isLeft shouldBe true
-    result.left.get should include("dimension")
+    result.left.get shouldBe a [ApiError.DimensionMismatch]
   }
 
   test("search should fail for invalid k") {
@@ -59,7 +60,7 @@ class SearchServiceTest extends AnyFunSuite with Matchers with BeforeAndAfterEac
     val result = searchService.search("test-index", Array(0.0f, 0.0f, 0.0f), k = 0)
 
     result.isLeft shouldBe true
-    result.left.get should include("positive")
+    result.left.get shouldBe a [ApiError.InvalidRequest]
   }
 
   test("search should respect ef parameter") {
@@ -110,14 +111,14 @@ class SearchServiceTest extends AnyFunSuite with Matchers with BeforeAndAfterEac
     )
 
     result.isLeft shouldBe true
-    result.left.get should include("not found")
+    result.left.get shouldBe a [ApiError.IndexNotFound]
   }
 
   test("multiSearch should fail when no indexes are available") {
     val result = searchService.multiSearch(Array(0.5f, 0.5f, 0.5f), k = 2)
 
     result.isLeft shouldBe true
-    result.left.get should include("No indexes")
+    result.left.get shouldBe ApiError.NoIndexesAvailable
   }
 
   test("multiSearch merged results should be sorted by distance") {
@@ -159,6 +160,6 @@ class SearchServiceTest extends AnyFunSuite with Matchers with BeforeAndAfterEac
     val result = searchService.batchSearch("non-existent", Seq((Array(0.0f, 0.0f, 0.0f), 2)))
 
     result.isLeft shouldBe true
-    result.left.get should include("not found")
+    result.left.get shouldBe a [ApiError.IndexNotFound]
   }
 }

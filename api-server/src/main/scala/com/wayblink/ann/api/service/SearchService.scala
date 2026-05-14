@@ -1,13 +1,11 @@
 package com.wayblink.ann.api.service
 
+import com.wayblink.ann.api.error.ApiError
+import com.wayblink.ann.bundle.Routing
 import com.wayblink.ann.core.index.SearchResult
 
 /**
  * Result of a search operation on a single index.
- *
- * @param indexId     Index that was searched
- * @param results     Search results
- * @param queryTimeMs Time taken to execute the search
  */
 case class SingleSearchResult(
   indexId: String,
@@ -15,26 +13,13 @@ case class SingleSearchResult(
   queryTimeMs: Long
 )
 
-/**
- * Result item with index information for multi-index searches.
- *
- * @param id        Vector ID
- * @param distance  Distance from query
- * @param indexId   Source index ID
- */
+/** Result item with index information for multi-index searches. */
 case class MergedResultItem(
   id: Long,
   distance: Float,
   indexId: String
 )
 
-/**
- * Result of a multi-index search operation.
- *
- * @param perIndexResults Results from each index
- * @param merged          Merged and sorted results
- * @param totalTimeMs     Total time taken
- */
 case class MultiSearchResult(
   perIndexResults: Map[String, Seq[SearchResult]],
   merged: Seq[MergedResultItem],
@@ -44,167 +29,211 @@ case class MultiSearchResult(
 /**
  * Service for executing search operations across indexes.
  *
- * @param indexManager The index manager containing loaded indexes
+ * Service-layer errors are typed ([[ApiError]]); the route layer maps
+ * them to HTTP status codes. This replaces the legacy
+ * `Either[String, _]` shape whose error routing relied on
+ * substring-matching the message text (todo.md #6).
+ *
+ * Dispatches between flat (single-HNSW) and bundle (routed multi-HNSW)
+ * indexes via [[IndexManager.getEntry]] — callers don't need to know
+ * which mode an indexId is in.
  */
 class SearchService(indexManager: IndexManager) {
 
   private val DefaultEf = 50
+  private val RoutingNprobe = 3
 
-  /**
-   * Search a single index for nearest neighbors.
-   *
-   * @param indexId Index to search
-   * @param query   Query vector
-   * @param k       Number of neighbors to return
-   * @param ef      Search ef parameter (optional)
-   * @return Either an error message or the search result
-   */
+  // ── Single-index search ────────────────────────────────────────────
+
   def search(
     indexId: String,
     query: Array[Float],
     k: Int,
     ef: Option[Int] = None
-  ): Either[String, SingleSearchResult] = {
-    indexManager.getIndex(indexId) match {
-      case Some(info) =>
-        // Validate dimension
-        if (query.length != info.index.dimension) {
-          return Left(s"Query dimension (${query.length}) does not match index dimension (${info.index.dimension})")
-        }
+  ): Either[ApiError, SingleSearchResult] = {
+    if (k <= 0) return Left(ApiError.InvalidRequest("k must be positive"))
 
-        // Validate k
-        if (k <= 0) {
-          return Left("k must be positive")
-        }
-
-        try {
-          val startTime = System.currentTimeMillis()
-          val results = info.index.search(query, k, ef.getOrElse(DefaultEf))
-          val queryTime = System.currentTimeMillis() - startTime
-
-          Right(SingleSearchResult(indexId, results, queryTime))
-        } catch {
-          case e: Exception =>
-            Left(s"Search failed: ${e.getMessage}")
-        }
-
+    indexManager.getEntry(indexId) match {
+      case Some(IndexEntry.Flat(info)) =>
+        searchFlat(info, query, k, ef)
+      case Some(IndexEntry.Bundle(info)) =>
+        searchBundle(info, query, k, ef)
       case None =>
-        Left(s"Index '$indexId' not found")
+        Left(ApiError.IndexNotFound(indexId))
+    }
+  }
+
+  private def searchFlat(
+    info: LoadedIndexInfo,
+    query: Array[Float],
+    k: Int,
+    ef: Option[Int]
+  ): Either[ApiError, SingleSearchResult] = {
+    if (query.length != info.index.dimension) {
+      return Left(ApiError.DimensionMismatch(info.index.dimension, query.length))
+    }
+    try {
+      val start = System.currentTimeMillis()
+      val results = info.index.search(query, k, ef.getOrElse(DefaultEf))
+      Right(SingleSearchResult(info.indexId, results, System.currentTimeMillis() - start))
+    } catch {
+      case e: Exception => Left(ApiError.SearchFailed(e.getMessage))
     }
   }
 
   /**
-   * Search multiple indexes and merge results.
-   *
-   * @param query    Query vector
-   * @param k        Number of neighbors per index
-   * @param ef       Search ef parameter (optional)
-   * @param indexIds Specific indexes to search (None = all indexes)
-   * @return Either an error message or the multi-search result
+   * Search a bundle by routing through the global index (if any) and
+   * fanning out to the selected local indexes. Results are tagged with
+   * the local indexId via SearchResult's id alone — callers needing
+   * (id, indexId) pairs should prefer the multiSearch shape.
    */
+  private def searchBundle(
+    bundle: LoadedBundleInfo,
+    query: Array[Float],
+    k: Int,
+    ef: Option[Int]
+  ): Either[ApiError, SingleSearchResult] = {
+    if (query.length != bundle.dimension) {
+      return Left(ApiError.DimensionMismatch(bundle.dimension, query.length))
+    }
+    try {
+      val start = System.currentTimeMillis()
+      val targetIds = Routing.selectTargetIndexes(
+        queryVector = query,
+        nprobe = RoutingNprobe,
+        globalIndex = bundle.globalIndex,
+        allIndexIds = bundle.localIndexes.keys.toSeq,
+        boundaryMap = bundle.boundaryMap
+      )
+      val effectiveEf = ef.getOrElse(DefaultEf)
+      val raw = scala.collection.mutable.ArrayBuffer.empty[SearchResult]
+      targetIds.foreach { id =>
+        bundle.localIndexes.get(id).foreach { idx =>
+          raw ++= idx.search(query, k, effectiveEf)
+        }
+      }
+      // Merge across the probed local indexes; we lose the
+      // per-local indexId tag here, but it's preserved at the
+      // multiSearch entry point. The flat-style single-search shape
+      // intentionally returns SearchResult to keep wire compat.
+      val merged = raw.sortBy(_.distance).take(k).toSeq
+      Right(SingleSearchResult(bundle.indexId, merged, System.currentTimeMillis() - start))
+    } catch {
+      case e: Exception => Left(ApiError.SearchFailed(e.getMessage))
+    }
+  }
+
+  // ── Multi-index search ─────────────────────────────────────────────
+
   def multiSearch(
     query: Array[Float],
     k: Int,
     ef: Option[Int] = None,
     indexIds: Option[Seq[String]] = None
-  ): Either[String, MultiSearchResult] = {
-    val startTime = System.currentTimeMillis()
+  ): Either[ApiError, MultiSearchResult] = {
+    if (k <= 0) return Left(ApiError.InvalidRequest("k must be positive"))
 
-    // Determine which indexes to search
-    val targetIndexes = indexIds match {
+    val targets: Seq[IndexEntry] = indexIds match {
       case Some(ids) =>
-        // Validate all specified indexes exist
         val missing = ids.filterNot(indexManager.exists)
         if (missing.nonEmpty) {
-          return Left(s"Indexes not found: ${missing.mkString(", ")}")
+          // Surface the first missing id; the legacy behaviour listed
+          // them all in a single string, but a typed error is clearer.
+          return Left(ApiError.IndexNotFound(missing.head))
         }
-        ids.flatMap(indexManager.getIndex)
+        ids.flatMap(indexManager.getEntry)
       case None =>
-        indexManager.listIndexes()
+        indexManager.listEntries()
     }
 
-    if (targetIndexes.isEmpty) {
-      return Left("No indexes available to search")
-    }
+    if (targets.isEmpty) return Left(ApiError.NoIndexesAvailable)
 
-    // Validate dimension consistency
-    val dimensions = targetIndexes.map(_.index.dimension).distinct
-    if (dimensions.size > 1) {
-      return Left(s"Indexes have inconsistent dimensions: ${dimensions.mkString(", ")}")
+    // Dimension check across the union of underlying indexes.
+    val dims = targets.flatMap {
+      case IndexEntry.Flat(i)   => Seq(i.index.dimension)
+      case IndexEntry.Bundle(b) => Seq(b.dimension)
+    }.distinct
+    if (dims.size > 1) {
+      return Left(ApiError.InvalidRequest(s"Indexes have inconsistent dimensions: ${dims.mkString(", ")}"))
     }
-
-    val expectedDim = dimensions.head
-    if (query.length != expectedDim) {
-      return Left(s"Query dimension (${query.length}) does not match index dimension ($expectedDim)")
-    }
-
-    // Validate k
-    if (k <= 0) {
-      return Left("k must be positive")
+    if (query.length != dims.head) {
+      return Left(ApiError.DimensionMismatch(dims.head, query.length))
     }
 
     try {
-      // Search all indexes
-      val perIndexResults = targetIndexes.map { info =>
-        val results = info.index.search(query, k, ef.getOrElse(DefaultEf))
-        info.indexId -> results
-      }.toMap
+      val start = System.currentTimeMillis()
+      val effectiveEf = ef.getOrElse(DefaultEf)
 
-      // Merge and sort results by distance
-      val merged = perIndexResults.flatMap { case (indexId, results) =>
-        results.map(r => MergedResultItem(r.id, r.distance, indexId))
-      }.toSeq.sortBy(_.distance).take(k)
+      val perIndex = scala.collection.mutable.LinkedHashMap.empty[String, Seq[SearchResult]]
+      val merged   = scala.collection.mutable.ArrayBuffer.empty[MergedResultItem]
 
-      val totalTime = System.currentTimeMillis() - startTime
+      targets.foreach {
+        case IndexEntry.Flat(info) =>
+          val results = info.index.search(query, k, effectiveEf)
+          perIndex(info.indexId) = results
+          results.foreach(r => merged += MergedResultItem(r.id, r.distance, info.indexId))
+        case IndexEntry.Bundle(bundle) =>
+          val targetIds = Routing.selectTargetIndexes(
+            query, RoutingNprobe, bundle.globalIndex,
+            bundle.localIndexes.keys.toSeq, bundle.boundaryMap
+          )
+          val raw = scala.collection.mutable.ArrayBuffer.empty[SearchResult]
+          targetIds.foreach { id =>
+            bundle.localIndexes.get(id).foreach { idx =>
+              val results = idx.search(query, k, effectiveEf)
+              raw ++= results
+              results.foreach(r => merged += MergedResultItem(r.id, r.distance, bundle.indexId))
+            }
+          }
+          perIndex(bundle.indexId) = raw.sortBy(_.distance).take(k).toSeq
+      }
 
-      Right(MultiSearchResult(perIndexResults, merged, totalTime))
+      val topK = merged.sortBy(_.distance).take(k).toSeq
+      Right(MultiSearchResult(perIndex.toMap, topK, System.currentTimeMillis() - start))
     } catch {
-      case e: Exception =>
-        Left(s"Multi-search failed: ${e.getMessage}")
+      case e: Exception => Left(ApiError.SearchFailed(e.getMessage))
     }
   }
 
-  /**
-   * Batch search on a single index with multiple queries.
-   *
-   * @param indexId Index to search
-   * @param queries Query vectors with individual k values
-   * @param ef      Search ef parameter (optional, applies to all queries)
-   * @return Either an error message or results for each query
-   */
+  // ── Batch search (single index only) ───────────────────────────────
+
   def batchSearch(
     indexId: String,
     queries: Seq[(Array[Float], Int)],
     ef: Option[Int] = None
-  ): Either[String, Seq[SingleSearchResult]] = {
-    indexManager.getIndex(indexId) match {
-      case Some(info) =>
-        val startTime = System.currentTimeMillis()
-
-        // Validate all query dimensions
-        val invalidQueries = queries.zipWithIndex.filter { case ((q, _), _) =>
-          q.length != info.index.dimension
+  ): Either[ApiError, Seq[SingleSearchResult]] = {
+    indexManager.getEntry(indexId) match {
+      case Some(entry) =>
+        val dim = entry match {
+          case IndexEntry.Flat(i)   => i.index.dimension
+          case IndexEntry.Bundle(b) => b.dimension
         }
-        if (invalidQueries.nonEmpty) {
-          val indices = invalidQueries.map(_._2).mkString(", ")
-          return Left(s"Query dimension mismatch at indices: $indices")
+        val invalid = queries.zipWithIndex.collect {
+          case ((q, _), i) if q.length != dim => i
+        }
+        if (invalid.nonEmpty) {
+          return Left(ApiError.InvalidRequest(
+            s"Query dimension mismatch at indices: ${invalid.mkString(", ")}"
+          ))
         }
 
         try {
-          val results = queries.map { case (query, k) =>
-            val queryStart = System.currentTimeMillis()
-            val searchResults = info.index.search(query, k, ef.getOrElse(DefaultEf))
-            val queryTime = System.currentTimeMillis() - queryStart
-            SingleSearchResult(indexId, searchResults, queryTime)
+          val results = queries.map { case (q, k) =>
+            val single = entry match {
+              case IndexEntry.Flat(info)   => searchFlat(info, q, k, ef)
+              case IndexEntry.Bundle(info) => searchBundle(info, q, k, ef)
+            }
+            single match {
+              case Right(r) => r
+              case Left(err) => throw new RuntimeException(err.message)
+            }
           }
           Right(results)
         } catch {
-          case e: Exception =>
-            Left(s"Batch search failed: ${e.getMessage}")
+          case e: Exception => Left(ApiError.SearchFailed(e.getMessage))
         }
 
-      case None =>
-        Left(s"Index '$indexId' not found")
+      case None => Left(ApiError.IndexNotFound(indexId))
     }
   }
 }

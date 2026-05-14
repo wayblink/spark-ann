@@ -289,6 +289,65 @@ case class ErrorResponse(
   message: String
 )
 
+// ==================== Bundle-mode DTOs (pattern B) ====================
+
+/**
+ * Request payload for loading an offline-built bundle into the
+ * api-server. Distinct from LoadIndexRequest (single flat .hnsw) so
+ * each path has a clear shape on the wire.
+ *
+ * @param indexId    Identifier the bundle will be served under
+ * @param bundlePath Filesystem path to the bundle root directory
+ */
+case class BundleLoadRequest(
+  indexId: String,
+  bundlePath: String
+)
+
+/**
+ * Summary of a loaded bundle. Returned by bundle CRUD endpoints and
+ * by the listing endpoint when the entry is a bundle (distinguished
+ * from flat IndexInfo via the `kind` discriminator).
+ */
+case class BundleInfo(
+  indexId: String,
+  bundlePath: String,
+  totalVectors: Long,
+  dimension: Int,
+  numLocalIndexes: Int,
+  hasGlobalIndex: Boolean,
+  algorithm: String,
+  distanceType: String,
+  loadedAt: Long
+)
+
+/**
+ * Unified listing entry. `kind` is the JSON discriminator:
+ *   - "flat"   → flat field set (size, distanceType, ...) matches IndexInfo
+ *   - "bundle" → bundle field set (numLocalIndexes, ...) matches BundleInfo
+ *
+ * Encoded inline so clients can branch on `kind` without a wrapper.
+ */
+case class UnifiedIndexEntry(
+  kind: String,
+  indexId: String,
+  dimension: Int,
+  size: Long,
+  distanceType: String,
+  indexPath: Option[String] = None,
+  bundlePath: Option[String] = None,
+  numLocalIndexes: Option[Int] = None,
+  hasGlobalIndex: Option[Boolean] = None,
+  algorithm: Option[String] = None,
+  loadedAt: Long = 0L
+)
+
+case class UnifiedIndexListResponse(
+  indexes: Seq[UnifiedIndexEntry],
+  totalIndexes: Int,
+  totalVectors: Long
+)
+
 // ==================== JSON Protocols ====================
 
 object ApiJsonProtocol extends DefaultJsonProtocol {
@@ -335,4 +394,10 @@ object ApiJsonProtocol extends DefaultJsonProtocol {
   implicit val readinessResponseFormat: RootJsonFormat[ReadinessResponse] = jsonFormat1(ReadinessResponse)
   implicit val livenessResponseFormat: RootJsonFormat[LivenessResponse] = jsonFormat1(LivenessResponse)
   implicit val errorResponseFormat: RootJsonFormat[ErrorResponse] = jsonFormat2(ErrorResponse)
+
+  // Bundle DTOs (pattern B)
+  implicit val bundleLoadRequestFormat: RootJsonFormat[BundleLoadRequest] = jsonFormat2(BundleLoadRequest)
+  implicit val bundleInfoFormat: RootJsonFormat[BundleInfo] = jsonFormat9(BundleInfo)
+  implicit val unifiedIndexEntryFormat: RootJsonFormat[UnifiedIndexEntry] = jsonFormat11(UnifiedIndexEntry)
+  implicit val unifiedIndexListResponseFormat: RootJsonFormat[UnifiedIndexListResponse] = jsonFormat3(UnifiedIndexListResponse)
 }

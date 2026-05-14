@@ -1,9 +1,10 @@
 package com.wayblink.ann.api.routes
 
-import akka.http.scaladsl.model.StatusCodes
-import akka.http.scaladsl.server.{Directive0, Route}
+import akka.http.scaladsl.model.StatusCode
+import akka.http.scaladsl.server.{Directive0, Rejection, RejectionHandler, Route}
 import akka.http.scaladsl.server.Directives._
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
+import com.wayblink.ann.api.error.ApiError
 import com.wayblink.ann.api.model._
 import com.wayblink.ann.api.model.ApiJsonProtocol._
 import com.wayblink.ann.api.service.{SearchService, IndexManager}
@@ -16,106 +17,104 @@ import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.ws.rs.{POST, Path}
 
 /**
- * HTTP routes for search operations.
- *
- * @param searchService The search service for executing queries
- * @param indexManager  The index manager for validation
+ * Custom Akka HTTP rejection emitted by the search-request validation
+ * directive. Mapped to a typed 400 response by [[SearchRoutes.routes]].
+ */
+final case class ValidationRejection(reason: String) extends Rejection
+
+/**
+ * HTTP routes for search operations. Service-layer errors come back as
+ * [[ApiError]] and are mapped to HTTP status codes via a single helper,
+ * eliminating the substring-based routing flagged in todo.md #6.
  */
 @Path("/")
 @Tag(name = "Search", description = "Vector similarity search operations")
 class SearchRoutes(searchService: SearchService, indexManager: IndexManager) {
 
-  val routes: Route = concat(
-    // POST /indexes/{indexId}/search - Search a single index
-    pathPrefix("indexes" / Segment / "search") { indexId =>
-      post {
-        entity(as[SearchRequest]) { request =>
-          validateSearchRequest(request) {
-            searchService.search(indexId, request.vector, request.k, request.ef) match {
-              case Right(result) =>
-                val response = SearchResponse(
-                  indexId = result.indexId,
-                  results = result.results.map(r => SearchResultItem(r.id, r.distance)),
-                  queryTimeMs = result.queryTimeMs
-                )
-                complete(response)
-              case Left(error) if error.contains("not found") =>
-                complete(StatusCodes.NotFound -> ErrorResponse("IndexNotFound", error))
-              case Left(error) if error.contains("dimension") =>
-                complete(StatusCodes.UnprocessableEntity -> ErrorResponse("DimensionMismatch", error))
-              case Left(error) =>
-                complete(StatusCodes.InternalServerError -> ErrorResponse("SearchError", error))
+  /** Map every ApiError to a typed HTTP response. */
+  private def respond(err: ApiError): Route = {
+    val status: StatusCode = ApiError.toHttpStatus(err)
+    complete(status -> ErrorResponse(err.code, err.message))
+  }
+
+  /** Handle ValidationRejection emitted by validateSearchParams. */
+  private val rejectionHandler: RejectionHandler =
+    RejectionHandler.newBuilder()
+      .handle { case ValidationRejection(reason) =>
+        respond(ApiError.InvalidRequest(reason))
+      }
+      .result()
+
+  val routes: Route = handleRejections(rejectionHandler) {
+    concat(
+      pathPrefix("indexes" / Segment / "search") { indexId =>
+        post {
+          entity(as[SearchRequest]) { request =>
+            validateSearchParams(request) {
+              searchService.search(indexId, request.vector, request.k, request.ef) match {
+                case Right(result) =>
+                  complete(SearchResponse(
+                    indexId = result.indexId,
+                    results = result.results.map(r => SearchResultItem(r.id, r.distance)),
+                    queryTimeMs = result.queryTimeMs
+                  ))
+                case Left(err) => respond(err)
+              }
+            }
+          }
+        }
+      },
+      path("search") {
+        post {
+          entity(as[MultiSearchRequest]) { request =>
+            validateSearchParams(SearchRequest(request.vector, request.k, request.ef)) {
+              searchService.multiSearch(request.vector, request.k, request.ef, request.indexIds) match {
+                case Right(result) =>
+                  complete(MultiSearchResponse(
+                    results = result.perIndexResults.map { case (indexId, results) =>
+                      indexId -> results.map(r => SearchResultItem(r.id, r.distance))
+                    },
+                    merged = result.merged.map(r => MergedSearchResultItem(r.id, r.distance, r.indexId)),
+                    totalTimeMs = result.totalTimeMs
+                  ))
+                case Left(err) => respond(err)
+              }
+            }
+          }
+        }
+      },
+      path("search" / "batch") {
+        post {
+          entity(as[BatchSearchRequest]) { request =>
+            if (request.queries.isEmpty) {
+              respond(ApiError.InvalidRequest("queries cannot be empty"))
+            } else {
+              val queries = request.queries.map(q => (q.vector, q.k))
+              searchService.batchSearch(request.indexId, queries, request.ef) match {
+                case Right(results) =>
+                  complete(BatchSearchResponse(
+                    results = results.zipWithIndex.map { case (r, idx) =>
+                      BatchSearchResultItem(
+                        queryIndex = idx,
+                        results = r.results.map(sr => SearchResultItem(sr.id, sr.distance))
+                      )
+                    },
+                    totalTimeMs = results.map(_.queryTimeMs).sum
+                  ))
+                case Left(err) => respond(err)
+              }
             }
           }
         }
       }
-    },
-    // POST /search - Multi-index search
-    path("search") {
-      post {
-        entity(as[MultiSearchRequest]) { request =>
-          validateSearchRequest(SearchRequest(request.vector, request.k, request.ef)) {
-            searchService.multiSearch(request.vector, request.k, request.ef, request.indexIds) match {
-              case Right(result) =>
-                val response = MultiSearchResponse(
-                  results = result.perIndexResults.map { case (indexId, results) =>
-                    indexId -> results.map(r => SearchResultItem(r.id, r.distance))
-                  },
-                  merged = result.merged.map(r => MergedSearchResultItem(r.id, r.distance, r.indexId)),
-                  totalTimeMs = result.totalTimeMs
-                )
-                complete(response)
-              case Left(error) if error.contains("not found") =>
-                complete(StatusCodes.NotFound -> ErrorResponse("IndexNotFound", error))
-              case Left(error) if error.contains("dimension") =>
-                complete(StatusCodes.UnprocessableEntity -> ErrorResponse("DimensionMismatch", error))
-              case Left(error) if error.contains("No indexes") =>
-                complete(StatusCodes.BadRequest -> ErrorResponse("NoIndexes", error))
-              case Left(error) =>
-                complete(StatusCodes.InternalServerError -> ErrorResponse("SearchError", error))
-            }
-          }
-        }
-      }
-    },
-    // POST /search/batch - Batch search
-    path("search" / "batch") {
-      post {
-        entity(as[BatchSearchRequest]) { request =>
-          if (request.queries.isEmpty) {
-            complete(StatusCodes.BadRequest -> ErrorResponse("InvalidRequest", "queries cannot be empty"))
-          } else {
-            val queries = request.queries.map(q => (q.vector, q.k))
-            searchService.batchSearch(request.indexId, queries, request.ef) match {
-              case Right(results) =>
-                val response = BatchSearchResponse(
-                  results = results.zipWithIndex.map { case (r, idx) =>
-                    BatchSearchResultItem(
-                      queryIndex = idx,
-                      results = r.results.map(sr => SearchResultItem(sr.id, sr.distance))
-                    )
-                  },
-                  totalTimeMs = results.map(_.queryTimeMs).sum
-                )
-                complete(response)
-              case Left(error) if error.contains("not found") =>
-                complete(StatusCodes.NotFound -> ErrorResponse("IndexNotFound", error))
-              case Left(error) if error.contains("dimension") =>
-                complete(StatusCodes.UnprocessableEntity -> ErrorResponse("DimensionMismatch", error))
-              case Left(error) =>
-                complete(StatusCodes.InternalServerError -> ErrorResponse("SearchError", error))
-            }
-          }
-        }
-      }
-    }
-  )
+    )
+  }
 
   @POST
   @Path("/indexes/{indexId}/search")
   @Operation(
     summary = "Search a single index",
-    description = "Find k nearest neighbors in the specified index",
+    description = "Find k nearest neighbors in the specified index (flat or bundle)",
     parameters = Array(
       new Parameter(
         name = "indexId",
@@ -187,20 +186,24 @@ class SearchRoutes(searchService: SearchService, indexManager: IndexManager) {
   def batchSearch(): Unit = {}
 
   /**
-   * Validate basic search request parameters.
+   * Validate basic search request parameters. Replaces the previous
+   * `validateSearchRequest` that returned Directive0 but called
+   * `complete(...)` inline (todo.md #13). Now emits a typed
+   * ValidationRejection that the route-level rejection handler maps
+   * to a 400 response. The shape Directive0 is correct: the directive
+   * either passes through (parameters valid) or rejects.
    */
-  private def validateSearchRequest(request: SearchRequest): Directive0 = {
-    if (request.vector.isEmpty) {
-      complete(StatusCodes.BadRequest -> ErrorResponse("InvalidVector", "vector cannot be empty"))
-    } else if (request.k <= 0) {
-      complete(StatusCodes.BadRequest -> ErrorResponse("InvalidParameter", "k must be positive"))
-    } else if (request.k > 1000) {
-      complete(StatusCodes.BadRequest -> ErrorResponse("InvalidParameter", "k cannot exceed 1000"))
-    } else if (request.ef.exists(_ <= 0)) {
-      complete(StatusCodes.BadRequest -> ErrorResponse("InvalidParameter", "ef must be positive"))
-    } else {
+  private def validateSearchParams(request: SearchRequest): Directive0 = {
+    if (request.vector.isEmpty)
+      reject(ValidationRejection("vector cannot be empty"))
+    else if (request.k <= 0)
+      reject(ValidationRejection("k must be positive"))
+    else if (request.k > 1000)
+      reject(ValidationRejection("k cannot exceed 1000"))
+    else if (request.ef.exists(_ <= 0))
+      reject(ValidationRejection("ef must be positive"))
+    else
       pass
-    }
   }
 }
 
