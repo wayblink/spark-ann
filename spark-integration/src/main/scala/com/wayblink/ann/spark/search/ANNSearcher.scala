@@ -2,7 +2,7 @@ package com.wayblink.ann.spark.search
 
 import com.wayblink.ann.core.index.{HNSWLibIndex, SearchResult}
 import com.wayblink.ann.bundle.ANNIndexMetadata
-import com.wayblink.ann.bundle.{LocalIndexMetadata, MetadataJson}
+import com.wayblink.ann.bundle.{BundleReader, LocalIndexMetadata, MetadataJson, Routing}
 import com.wayblink.ann.spark.util.{DriverIndexCache, ExecutorIndexCache}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 
@@ -225,26 +225,18 @@ object ANNSearcher {
    * boundary routing map; HNSW indexes are loaded lazily on first
    * access. Calling this against a large index set is O(metadata size),
    * not O(indexes).
+   *
+   * Delegates the format details to com.wayblink.ann.bundle.BundleReader
+   * so the same parsing code path serves the api-server's pattern-B
+   * online load.
    */
   def load(spark: SparkSession, indexPath: String): ANNSearcher = {
-    val metadataPath = Paths.get(indexPath, "ann_index.json")
-    val metadata = MetadataJson.readMetadata(metadataPath)
-
-    val boundaryMap: Array[String] = if (metadata.globalIndexPath.isDefined) {
-      val mappingPath = Paths.get(indexPath, "global", "boundary_mapping.json")
-      val entries = MetadataJson.readBoundaryMapping(mappingPath)
-      val arr = new Array[String](entries.length)
-      var i = 0
-      while (i < entries.length) {
-        val e = entries(i)
-        arr(e.globalId) = e.indexId
-        i += 1
-      }
-      arr
-    } else {
-      Array.empty[String]
+    val bundlePath = Paths.get(indexPath)
+    val metadata = BundleReader.loadMetadata(bundlePath) match {
+      case Right(m)   => m
+      case Left(err) => throw new IllegalArgumentException(s"Failed to load bundle: $err")
     }
-
+    val boundaryMap = BundleReader.loadBoundaryMap(bundlePath, metadata)
     new ANNSearcher(spark, metadata, Map.empty, None, boundaryMap)
   }
 
@@ -281,18 +273,8 @@ object ANNSearcher {
     allIndexIds: Seq[String],
     boundaryMap: Array[String]
   ): Seq[String] = {
-    globalIndex match {
-      case Some(global) if boundaryMap.nonEmpty =>
-        val routingResults = global.search(queryVector, nprobe * 2, ef = 100)
-        val indexIds = routingResults.flatMap { r =>
-          val gid = r.id.toInt
-          if (gid >= 0 && gid < boundaryMap.length) Some(boundaryMap(gid)) else None
-        }.distinct.take(nprobe)
-
-        if (indexIds.isEmpty) allIndexIds else indexIds
-
-      case _ =>
-        allIndexIds
-    }
+    // Delegate to the runtime-agnostic implementation in the bundle
+    // module so the same routing path serves the api-server.
+    Routing.selectTargetIndexes(queryVector, nprobe, globalIndex, allIndexIds, boundaryMap)
   }
 }
