@@ -1,26 +1,13 @@
 package com.wayblink.ann.spark.builder
 
+import com.wayblink.ann.bundle.{GroupingStrategy, MergeSmall, SingleFile}
 import org.apache.hadoop.fs.Path
 
 import scala.collection.mutable
 
-/**
- * Sealed trait representing file grouping strategies.
- * Determines how data files are grouped for index building.
- */
-sealed trait GroupingStrategy extends Serializable
-
-/**
- * Each data file gets its own index (1:1 mapping).
- * Best for large files or when fine-grained index control is needed.
- */
-case object SingleFile extends GroupingStrategy
-
-/**
- * Merge small files into groups to reduce index fragmentation.
- * Groups files until reaching the target vector count per index.
- */
-case object MergeSmall extends GroupingStrategy
+// GroupingStrategy / SingleFile / MergeSmall live in
+// com.wayblink.ann.bundle because they're persisted in ANNIndexConfig
+// metadata; this file keeps only the Spark-side grouping logic.
 
 /**
  * Represents a group of files that will share a single index.

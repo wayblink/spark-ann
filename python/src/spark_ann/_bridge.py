@@ -104,15 +104,15 @@ def dict_to_config(config: Optional[Dict[str, Any]]) -> Any:
 
     j = jvm()
     grouping_name = merged["grouping_strategy"]
-    builder_pkg = j.com.wayblink.ann.spark.builder
+    bundle_pkg = j.com.wayblink.ann.bundle
     if grouping_name == "SingleFile":
         # Scala `case object` compiles to `<FQN>$.MODULE$` on the JVM.
         # Neither identifier is reachable via dotted attribute access in
         # Python because `$` is invalid in identifiers; getattr bypasses
         # that restriction at both levels.
-        grouping = getattr(getattr(builder_pkg, "SingleFile$"), "MODULE$")
+        grouping = getattr(getattr(bundle_pkg, "SingleFile$"), "MODULE$")
     elif grouping_name == "MergeSmall":
-        grouping = getattr(getattr(builder_pkg, "MergeSmall$"), "MODULE$")
+        grouping = getattr(getattr(bundle_pkg, "MergeSmall$"), "MODULE$")
     else:
         raise ValueError(
             f"Unknown grouping_strategy: {grouping_name!r}. "
@@ -121,7 +121,7 @@ def dict_to_config(config: Optional[Dict[str, Any]]) -> Any:
 
     pk_jopt = _to_jvm_option(merged["pk"])
 
-    return j.com.wayblink.ann.spark.api.ANNIndexConfig.apply(
+    return j.com.wayblink.ann.bundle.ANNIndexConfig.apply(
         int(merged["M"]),
         int(merged["ef_construction"]),
         grouping,

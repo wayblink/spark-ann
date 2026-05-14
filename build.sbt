@@ -68,19 +68,16 @@ lazy val standaloneAssemblySettings = assemblyMergeSettings ++ Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(indexBundle, core, sparkIntegration, sparkSqlExtension, apiServer)
+  .aggregate(core, indexBundle, sparkIntegration, sparkSqlExtension, apiServer)
   .settings(
     name := "spark-ann",
     publish / skip := true
   )
 
-// Spark-free shared module: bundle data model, JSON metadata helpers,
-// algorithm-extensibility sealed traits, and a runtime-agnostic
-// BundleReader. Consumed by core / spark-integration / api-server.
-lazy val indexBundle = (project in file("index-bundle"))
+lazy val core = (project in file("core"))
   .settings(commonSettings)
   .settings(
-    name := "spark-ann-bundle",
+    name := "spark-ann-core",
     libraryDependencies ++= Seq(
       "com.github.jelmerk" % "hnswlib-core" % hnswlibVersion,
       "org.json4s" %% "json4s-jackson" % json4sVersion,
@@ -88,13 +85,17 @@ lazy val indexBundle = (project in file("index-bundle"))
     )
   )
 
-lazy val core = (project in file("core"))
-  .dependsOn(indexBundle)
+// Spark-free shared module: bundle data model, JSON metadata helpers,
+// algorithm-extensibility sealed traits, and a runtime-agnostic
+// BundleReader. Consumed by spark-integration / api-server. Depends on
+// core so it can reuse HNSWLibIndex for loading/routing without
+// duplicating that wrapper here.
+lazy val indexBundle = (project in file("index-bundle"))
+  .dependsOn(core)
   .settings(commonSettings)
   .settings(
-    name := "spark-ann-core",
+    name := "spark-ann-bundle",
     libraryDependencies ++= Seq(
-      "com.github.jelmerk" % "hnswlib-core" % hnswlibVersion,
       "org.json4s" %% "json4s-jackson" % json4sVersion,
       "org.scalatest" %% "scalatest" % scalatestVersion % Test
     )

@@ -73,7 +73,7 @@ def main() -> None:
         jvm = spark.sparkContext._jvm
         api = jvm.com.wayblink.ann.spark.api.ANNIndexAPI
         files = api.discoverDataFiles(spark._jsparkSession, data_root, "vector")
-        single_file = getattr(getattr(jvm.com.wayblink.ann.spark.builder,
+        single_file = getattr(getattr(jvm.com.wayblink.ann.bundle,
                                        "SingleFile$"), "MODULE$")
         groups = api.groupFiles(files, single_file, 500000)
         # ANNIndexConfig.apply takes (M, efConstruction, groupingStrategy,
@@ -81,7 +81,7 @@ def main() -> None:
         # pk: Option[String]). We pass scala.Option.empty() because
         # this example uses the sequential-id mode.
         none_opt = jvm.scala.Option.empty()
-        cfg = jvm.com.wayblink.ann.spark.api.ANNIndexConfig.apply(
+        cfg = jvm.com.wayblink.ann.bundle.ANNIndexConfig.apply(
             16, 200, single_file, 500000, 40, "euclidean", none_opt
         )
         meta = api.buildIndexFromFileGroups(

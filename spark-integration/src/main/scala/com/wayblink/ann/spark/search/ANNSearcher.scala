@@ -1,8 +1,8 @@
 package com.wayblink.ann.spark.search
 
 import com.wayblink.ann.core.index.{HNSWLibIndex, SearchResult}
-import com.wayblink.ann.spark.api.ANNIndexMetadata
-import com.wayblink.ann.spark.builder.{LocalIndexMetadata, MetadataJson}
+import com.wayblink.ann.bundle.ANNIndexMetadata
+import com.wayblink.ann.bundle.{LocalIndexMetadata, MetadataJson}
 import com.wayblink.ann.spark.util.{DriverIndexCache, ExecutorIndexCache}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 

@@ -1,28 +1,18 @@
 package com.wayblink.ann.spark.builder
 
+import com.wayblink.ann.bundle.{
+  ANNIndexConfig, ANNIndexMetadata, ANNIndexStatistics,
+  BoundaryMappingEntry, GlobalBoundaryNode, MetadataJson
+}
 import com.wayblink.ann.core.index.{HNSWConfig, HNSWLibIndex}
-import com.wayblink.ann.spark.api.{ANNIndexConfig, ANNIndexMetadata, ANNIndexStatistics}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.slf4j.LoggerFactory
 
 import java.io.File
 import java.nio.file.Paths
 
-/**
- * Boundary node selected from a local index for global routing.
- *
- * @param globalId    Unique ID across all indexes (format: "indexId:localId")
- * @param indexId     ID of the source local index
- * @param localId     Vector ID within the local index
- * @param vector      The boundary node vector
- */
-@SerialVersionUID(1L)
-case class GlobalBoundaryNode(
-  globalId: String,
-  indexId: String,
-  localId: Long,
-  vector: Array[Float]
-) extends Serializable
+// GlobalBoundaryNode moved to com.wayblink.ann.bundle alongside the
+// rest of the on-disk metadata model so non-Spark readers can use it.
 
 /**
  * Builder for constructing complete ANN indexes.

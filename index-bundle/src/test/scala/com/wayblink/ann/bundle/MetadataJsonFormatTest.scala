@@ -1,6 +1,5 @@
-package com.wayblink.ann.spark.builder
+package com.wayblink.ann.bundle
 
-import com.wayblink.ann.spark.api.{ANNIndexConfig, ANNIndexMetadata, ANNIndexStatistics}
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 

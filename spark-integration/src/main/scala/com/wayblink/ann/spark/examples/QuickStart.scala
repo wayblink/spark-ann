@@ -1,8 +1,10 @@
 package com.wayblink.ann.spark.examples
 
 import com.wayblink.ann.core.testutil.TestDataGenerator
-import com.wayblink.ann.spark.api.{ANNDataFrameExtensions, ANNIndexAPI, ANNIndexConfig}
-import com.wayblink.ann.spark.builder.{FileDiscovery, FileGroupingStrategy, SingleFile, MergeSmall}
+import com.wayblink.ann.bundle.ANNIndexConfig
+import com.wayblink.ann.spark.api.{ANNDataFrameExtensions, ANNIndexAPI}
+import com.wayblink.ann.bundle.{MergeSmall, SingleFile}
+import com.wayblink.ann.spark.builder.{FileDiscovery, FileGroupingStrategy}
 import org.apache.spark.sql.SparkSession
 
 /**

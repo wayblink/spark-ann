@@ -1,6 +1,5 @@
-package com.wayblink.ann.spark.builder
+package com.wayblink.ann.bundle
 
-import com.wayblink.ann.spark.api.ANNIndexMetadata
 import org.json4s._
 import org.json4s.jackson.Serialization
 
@@ -8,30 +7,13 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 
 /**
- * Envelope written to disk for all metadata files. Version guards future
- * schema migrations; readers reject unknown major versions.
- */
-case class MetadataEnvelope[T](
-  version: Int,
-  `type`: String,
-  payload: T
-)
-
-/**
- * Mapping entry persisted in boundary_mapping.json. Position in the JSON
- * array equals the global routing id, so lookups are O(1) once loaded.
- */
-case class BoundaryMappingEntry(
-  globalId: Int,
-  indexId: String,
-  localId: Long
-)
-
-/**
- * JSON (de)serialization for ANN metadata. Uses json4s-jackson, already a
- * transitive dependency of Spark 3.5. Replaces prior Java ObjectStream
- * serialization, which was fragile across field additions and opaque to
- * tooling.
+ * JSON (de)serialization for ANN bundle metadata. Uses json4s-jackson,
+ * already a transitive dependency of Spark 3.5 and pulled in
+ * standalone for non-Spark consumers.
+ *
+ * Writes a versioned envelope per file so readers can reject unknown
+ * majors. Replaces the prior Java ObjectStream serialization, which
+ * was fragile across field additions and opaque to tooling.
  */
 object MetadataJson {
 
@@ -39,6 +21,11 @@ object MetadataJson {
   val MetadataType: String = "ANNIndexMetadata"
   val BoundaryMappingType: String = "BoundaryNodeMapping"
 
+  // Custom serializer for the GroupingStrategy sealed trait. NoTypeHints
+  // alone can't round-trip case objects, so the on-disk form is the
+  // human-readable class name string. Adding a third case object means
+  // extending this match — the compiler will flag any missing branch
+  // via the exhaustive deserialiser case.
   private object GroupingStrategySerializer extends CustomSerializer[GroupingStrategy](_ => (
     { case JString(s) => s match {
         case "SingleFile" => SingleFile

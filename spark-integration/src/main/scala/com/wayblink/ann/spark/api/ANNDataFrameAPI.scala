@@ -1,5 +1,8 @@
 package com.wayblink.ann.spark.api
 
+import com.wayblink.ann.bundle.{
+  ANNIndexConfig, ANNIndexMetadata, GroupingStrategy
+}
 import com.wayblink.ann.spark.builder.{ANNIndexBuilder, FileDiscovery, FileGroup, FileGroupingStrategy}
 import com.wayblink.ann.spark.search.ANNSearcher
 import org.apache.spark.sql.{DataFrame, SparkSession}
@@ -236,7 +239,7 @@ object ANNIndexAPI {
    */
   def groupFiles(
     files: Array[com.wayblink.ann.spark.builder.DataFileInfo],
-    strategy: com.wayblink.ann.spark.builder.GroupingStrategy,
+    strategy: com.wayblink.ann.bundle.GroupingStrategy,
     targetVectorsPerIndex: Long = 500000
   ): Array[FileGroup] = {
     FileGroupingStrategy.groupFiles(files, strategy, targetVectorsPerIndex)

@@ -1,5 +1,8 @@
 package com.wayblink.ann.spark.builder
 
+import com.wayblink.ann.bundle.{
+  DataFileEntry, GlobalBoundaryNode, LocalIndexBuildResult, LocalIndexMetadata
+}
 import com.wayblink.ann.core.index.{HNSWConfig, HNSWLibIndex}
 import com.wayblink.ann.spark.util.{IndexStorageUtils, SerializableConfiguration, StreamingParquetVectorReader}
 import org.apache.hadoop.conf.Configuration
@@ -7,53 +10,9 @@ import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.sql.SparkSession
 
-/**
- * Entry representing a data file within a local index.
- *
- * @param filePath     Full path to the data file
- * @param numVectors   Number of vectors from this file
- * @param vectorOffset Starting offset for vectors from this file in the index
- */
-@SerialVersionUID(1L)
-case class DataFileEntry(
-  filePath: String,
-  numVectors: Long,
-  vectorOffset: Long
-) extends Serializable
-
-/**
- * Metadata for a built local index.
- *
- * @param indexId      Unique identifier for this index
- * @param dataFiles    Array of data file entries covered by this index
- * @param indexPath    Path where the index is stored
- * @param totalVectors Total number of vectors in the index
- * @param dimension    Vector dimensionality
- */
-@SerialVersionUID(1L)
-case class LocalIndexMetadata(
-  indexId: String,
-  dataFiles: Array[DataFileEntry],
-  indexPath: String,
-  totalVectors: Long,
-  dimension: Int
-) extends Serializable {
-  override def toString: String = {
-    s"LocalIndexMetadata($indexId, ${dataFiles.length} files, $totalVectors vectors, dim=$dimension)"
-  }
-}
-
-/**
- * Result of building a local index, containing both metadata and sampled boundary nodes.
- *
- * @param metadata       Metadata for the built index
- * @param boundaryNodes  Sampled boundary nodes for global routing
- */
-@SerialVersionUID(1L)
-case class LocalIndexBuildResult(
-  metadata: LocalIndexMetadata,
-  boundaryNodes: Array[GlobalBoundaryNode]
-) extends Serializable
+// DataFileEntry / LocalIndexMetadata / LocalIndexBuildResult /
+// GlobalBoundaryNode are pure data; they now live in
+// com.wayblink.ann.bundle so non-Spark readers can use them too.
 
 /**
  * Builder for constructing local HNSW indexes from file groups.
