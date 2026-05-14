@@ -68,13 +68,28 @@ lazy val standaloneAssemblySettings = assemblyMergeSettings ++ Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(core, sparkIntegration, sparkSqlExtension, apiServer)
+  .aggregate(indexBundle, core, sparkIntegration, sparkSqlExtension, apiServer)
   .settings(
     name := "spark-ann",
     publish / skip := true
   )
 
+// Spark-free shared module: bundle data model, JSON metadata helpers,
+// algorithm-extensibility sealed traits, and a runtime-agnostic
+// BundleReader. Consumed by core / spark-integration / api-server.
+lazy val indexBundle = (project in file("index-bundle"))
+  .settings(commonSettings)
+  .settings(
+    name := "spark-ann-bundle",
+    libraryDependencies ++= Seq(
+      "com.github.jelmerk" % "hnswlib-core" % hnswlibVersion,
+      "org.json4s" %% "json4s-jackson" % json4sVersion,
+      "org.scalatest" %% "scalatest" % scalatestVersion % Test
+    )
+  )
+
 lazy val core = (project in file("core"))
+  .dependsOn(indexBundle)
   .settings(commonSettings)
   .settings(
     name := "spark-ann-core",
@@ -86,7 +101,7 @@ lazy val core = (project in file("core"))
   )
 
 lazy val sparkIntegration = (project in file("spark-integration"))
-  .dependsOn(core)
+  .dependsOn(core, indexBundle)
   .settings(commonSettings)
   .settings(sparkAssemblySettings)
   .settings(
@@ -115,7 +130,7 @@ lazy val sparkSqlExtension = (project in file("spark-sql-extension"))
   )
 
 lazy val apiServer = (project in file("api-server"))
-  .dependsOn(core)
+  .dependsOn(core, indexBundle)
   .settings(commonSettings)
   .settings(standaloneAssemblySettings)
   .settings(
