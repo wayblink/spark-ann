@@ -132,7 +132,7 @@ case class LocalIndexBuildResult(
  * Configuration for building ANN indexes. Persisted as
  * ann_index.json/config; consumed by both the offline Spark builder
  * and online readers (the latter only care about distanceType, pk,
- * and algorithm — the build-time knobs are informational at read time).
+ * algorithm — the build-time knobs are informational at read time).
  *
  * @param M                      HNSW M parameter (connections per node)
  * @param efConstruction         HNSW efConstruction parameter
@@ -143,8 +143,11 @@ case class LocalIndexBuildResult(
  * @param distanceType           "euclidean" | "cosine"
  * @param pk                     Optional INT32/INT64 primary-key column.
  *                               When set, HNSW internal ids carry user pks.
+ * @param algorithm              Index algorithm. Today only HNSW is
+ *                               implemented; the field reserves the
+ *                               extension point in the on-disk contract.
  */
-@SerialVersionUID(3L)
+@SerialVersionUID(4L)
 case class ANNIndexConfig(
   M: Int = 16,
   efConstruction: Int = 200,
@@ -152,7 +155,8 @@ case class ANNIndexConfig(
   targetVectorsPerIndex: Long = 500000,
   boundaryNodesPerIndex: Int = 50,
   distanceType: String = "euclidean",
-  pk: Option[String] = None
+  pk: Option[String] = None,
+  algorithm: IndexAlgorithm = IndexAlgorithm.HNSW
 ) extends Serializable {
 
   /**

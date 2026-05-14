@@ -65,9 +65,9 @@ def to_jvm_float_array(values) -> Any:
 
 
 # Field order MUST match
-# com.wayblink.ann.spark.api.ANNIndexConfig case-class apply(...):
+# com.wayblink.ann.bundle.ANNIndexConfig case-class apply(...):
 #   (M, efConstruction, groupingStrategy, targetVectorsPerIndex,
-#    boundaryNodesPerIndex, distanceType, pk)
+#    boundaryNodesPerIndex, distanceType, pk, algorithm)
 # A change there without updating this list silently drops fields.
 _CONFIG_FIELD_ORDER = (
     "M",
@@ -77,6 +77,7 @@ _CONFIG_FIELD_ORDER = (
     "boundary_nodes_per_index",
     "distance_type",
     "pk",
+    "algorithm",
 )
 
 _DEFAULT_CONFIG: Dict[str, Any] = {
@@ -87,6 +88,7 @@ _DEFAULT_CONFIG: Dict[str, Any] = {
     "boundary_nodes_per_index": 50,
     "distance_type": "euclidean",
     "pk": None,
+    "algorithm": "hnsw",
 }
 
 
@@ -120,6 +122,7 @@ def dict_to_config(config: Optional[Dict[str, Any]]) -> Any:
         )
 
     pk_jopt = _to_jvm_option(merged["pk"])
+    algorithm_jvm = _algorithm_jvm(merged["algorithm"])
 
     return j.com.wayblink.ann.bundle.ANNIndexConfig.apply(
         int(merged["M"]),
@@ -129,6 +132,21 @@ def dict_to_config(config: Optional[Dict[str, Any]]) -> Any:
         int(merged["boundary_nodes_per_index"]),
         str(merged["distance_type"]),
         pk_jopt,
+        algorithm_jvm,
+    )
+
+
+def _algorithm_jvm(name: Any) -> Any:
+    """Resolve an IndexAlgorithm string to its JVM case-object MODULE$.
+
+    Currently the only legal value is "hnsw". Adding a future algorithm
+    requires both a Scala case object in IndexAlgorithm.scala AND a
+    branch here.
+    """
+    if name in (None, "", "hnsw", "HNSW"):
+        return getattr(getattr(jvm().com.wayblink.ann.bundle.IndexAlgorithm, "HNSW$"), "MODULE$")
+    raise ValueError(
+        f"Unknown algorithm: {name!r}. Supported: 'hnsw'."
     )
 
 

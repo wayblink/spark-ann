@@ -36,8 +36,24 @@ object MetadataJson {
     { case s: GroupingStrategy => JString(s.toString) }
   ))
 
+  // Custom serializer for the IndexAlgorithm sealed trait. The on-disk
+  // form is the lowercase short id ("hnsw"), not the Scala class name,
+  // so cross-language readers see a stable string. Unknown ids raise
+  // a MappingException which BundleReader catches and surfaces as
+  // BundleError.UnknownAlgorithm.
+  private object IndexAlgorithmSerializer extends CustomSerializer[IndexAlgorithm](_ => (
+    { case JString(s) =>
+        IndexAlgorithm.fromId(s).getOrElse(
+          throw new MappingException(s"Unknown IndexAlgorithm id: $s")
+        )
+    },
+    { case a: IndexAlgorithm => JString(a.id) }
+  ))
+
   implicit val formats: Formats =
-    Serialization.formats(NoTypeHints) + GroupingStrategySerializer
+    Serialization.formats(NoTypeHints) +
+      GroupingStrategySerializer +
+      IndexAlgorithmSerializer
 
   def writeMetadata(metadata: ANNIndexMetadata, targetPath: Path): Unit = {
     val envelope = MetadataEnvelope(CurrentVersion, MetadataType, metadata)

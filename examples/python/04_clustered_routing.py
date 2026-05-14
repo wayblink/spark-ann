@@ -78,11 +78,14 @@ def main() -> None:
         groups = api.groupFiles(files, single_file, 500000)
         # ANNIndexConfig.apply takes (M, efConstruction, groupingStrategy,
         # targetVectorsPerIndex, boundaryNodesPerIndex, distanceType,
-        # pk: Option[String]). We pass scala.Option.empty() because
-        # this example uses the sequential-id mode.
+        # pk: Option[String], algorithm: IndexAlgorithm). We pass
+        # scala.Option.empty() because this example uses sequential-id
+        # mode, and the HNSW case-object MODULE$ for algorithm.
         none_opt = jvm.scala.Option.empty()
+        hnsw = getattr(getattr(jvm.com.wayblink.ann.bundle.IndexAlgorithm,
+                                "HNSW$"), "MODULE$")
         cfg = jvm.com.wayblink.ann.bundle.ANNIndexConfig.apply(
-            16, 200, single_file, 500000, 40, "euclidean", none_opt
+            16, 200, single_file, 500000, 40, "euclidean", none_opt, hnsw
         )
         meta = api.buildIndexFromFileGroups(
             spark._jsparkSession, groups, "vector", index_path, cfg

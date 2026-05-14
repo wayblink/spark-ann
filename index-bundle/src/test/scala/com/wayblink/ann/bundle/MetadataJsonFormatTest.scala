@@ -105,4 +105,102 @@ class MetadataJsonFormatTest extends AnyFunSuite with Matchers {
     }
     ex.getMessage should include("newer than supported")
   }
+
+  test("algorithm field round-trips as the lowercase short id") {
+    val cfg = ANNIndexConfig(algorithm = IndexAlgorithm.HNSW)
+    val stats = ANNIndexStatistics(0L, 0, 0, 0, 0L)
+    val metadata = ANNIndexMetadata(
+      indexPath = "/x",
+      localIndexes = Array.empty,
+      globalIndexPath = None,
+      config = cfg,
+      statistics = stats,
+      createdAt = 0L
+    )
+
+    val target = tempPath("with_algo.json")
+    MetadataJson.writeMetadata(metadata, target)
+
+    val text = new String(Files.readAllBytes(target), StandardCharsets.UTF_8)
+    text should include("\"algorithm\" : \"hnsw\"")  // pretty-printed json4s
+
+    val read = MetadataJson.readMetadata(target)
+    read.config.algorithm shouldBe IndexAlgorithm.HNSW
+  }
+
+  test("metadata written before the algorithm field still loads (defaults to HNSW)") {
+    // Hand-craft a payload that omits the algorithm field. This
+    // mirrors what an older ANNIndexConfig (SerialVersionUID=3)
+    // would have written. json4s should populate the default value
+    // for the missing field.
+    val target = tempPath("old_no_algo.json")
+    val json =
+      """{
+        |  "version": 2,
+        |  "type": "ANNIndexMetadata",
+        |  "payload": {
+        |    "indexPath": "/x",
+        |    "localIndexes": [],
+        |    "globalIndexPath": null,
+        |    "config": {
+        |      "M": 16,
+        |      "efConstruction": 200,
+        |      "groupingStrategy": "SingleFile",
+        |      "targetVectorsPerIndex": 500000,
+        |      "boundaryNodesPerIndex": 50,
+        |      "distanceType": "euclidean",
+        |      "pk": null
+        |    },
+        |    "statistics": {
+        |      "totalVectors": 0,
+        |      "totalFiles": 0,
+        |      "numLocalIndexes": 0,
+        |      "dimension": 0,
+        |      "buildTimeMs": 0
+        |    },
+        |    "createdAt": 0
+        |  }
+        |}""".stripMargin
+    Files.createDirectories(target.getParent)
+    Files.write(target, json.getBytes(StandardCharsets.UTF_8))
+
+    val read = MetadataJson.readMetadata(target)
+    read.config.algorithm shouldBe IndexAlgorithm.HNSW
+  }
+
+  test("metadata with an unknown algorithm id raises") {
+    val target = tempPath("unknown_algo.json")
+    val json =
+      """{
+        |  "version": 2,
+        |  "type": "ANNIndexMetadata",
+        |  "payload": {
+        |    "indexPath": "/x",
+        |    "localIndexes": [],
+        |    "globalIndexPath": null,
+        |    "config": {
+        |      "M": 16,
+        |      "efConstruction": 200,
+        |      "groupingStrategy": "SingleFile",
+        |      "targetVectorsPerIndex": 500000,
+        |      "boundaryNodesPerIndex": 50,
+        |      "distanceType": "euclidean",
+        |      "pk": null,
+        |      "algorithm": "scann"
+        |    },
+        |    "statistics": {
+        |      "totalVectors": 0, "totalFiles": 0, "numLocalIndexes": 0,
+        |      "dimension": 0, "buildTimeMs": 0
+        |    },
+        |    "createdAt": 0
+        |  }
+        |}""".stripMargin
+    Files.createDirectories(target.getParent)
+    Files.write(target, json.getBytes(StandardCharsets.UTF_8))
+
+    val ex = intercept[Exception] { MetadataJson.readMetadata(target) }
+    val msg = Option(ex.getMessage).getOrElse("") +
+      Option(ex.getCause).map(_.getMessage).getOrElse("")
+    msg should include("scann")
+  }
 }
