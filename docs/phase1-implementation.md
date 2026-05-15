@@ -89,12 +89,10 @@ Phase 1 implements the MVP REST API for deploying Spark-ANN's vector search capa
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/v1/indexes` | List all loaded indexes |
-| GET | `/api/v1/indexes/{indexId}` | Get index details |
-| POST | `/api/v1/indexes` | Load from disk or create from vectors |
-| DELETE | `/api/v1/indexes/{indexId}` | Unload index from memory |
-| POST | `/api/v1/indexes/{indexId}/vectors` | Add vectors to existing index |
-| POST | `/api/v1/indexes/{indexId}/save` | Save index to disk |
+| GET | `/api/v1/indexes` | List all loaded bundles |
+| GET | `/api/v1/indexes/{indexId}` | Get bundle details |
+| POST | `/api/v1/indexes/bundle` | Load a bundle from disk |
+| DELETE | `/api/v1/indexes/{indexId}` | Unload bundle from memory |
 
 ---
 

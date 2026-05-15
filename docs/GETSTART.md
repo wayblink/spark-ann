@@ -328,7 +328,7 @@ curl http://localhost:18080/api/v1/indexes | jq
 # }
 ```
 
-> `kind` 字段告诉你这是 `"bundle"` 还是 `"flat"`（旧的单文件模式）。
+> `kind` 字段告诉你这是 `"bundle"`。
 
 ### 4.3 在线查询
 

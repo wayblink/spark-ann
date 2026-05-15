@@ -306,33 +306,31 @@ Batch search with multiple query vectors.
 
 ### 4.3 Index Management
 
+The api-server is bundle-only. It loads offline-built bundles, lists loaded bundles, fetches bundle details, and unloads bundles.
+
 #### `GET /indexes`
 
-List all loaded indexes.
+List all loaded bundles.
 
 **Response (200):**
 ```json
 {
   "indexes": [
     {
+      "kind": "bundle",
       "indexId": "products-v1",
       "dimension": 256,
       "size": 500000,
-      "indexPath": "/data/indexes/products-v1.hnsw",
+      "bundlePath": "/data/indexes/products-v1.hnsw",
       "distanceType": "cosine",
-      "memoryUsageMb": 512
-    },
-    {
-      "indexId": "users-v2",
-      "dimension": 128,
-      "size": 100000,
-      "indexPath": "/data/indexes/users-v2.hnsw",
-      "distanceType": "euclidean",
-      "memoryUsageMb": 128
+      "numLocalIndexes": 8,
+      "hasGlobalIndex": true,
+      "algorithm": "hnsw",
+      "loadedAt": 1700000000000
     }
   ],
-  "totalIndexes": 2,
-  "totalVectors": 600000
+  "totalIndexes": 1,
+  "totalVectors": 500000
 }
 ```
 
@@ -340,107 +338,54 @@ List all loaded indexes.
 
 #### `GET /indexes/{indexId}`
 
-Get details of a specific index.
+Get details of a specific loaded bundle.
 
 **Response (200):**
 ```json
 {
   "indexId": "products-v1",
+  "bundlePath": "/data/indexes/products-v1.hnsw",
+  "totalVectors": 500000,
   "dimension": 256,
-  "size": 500000,
-  "indexPath": "/data/indexes/products-v1.hnsw",
+  "numLocalIndexes": 8,
+  "hasGlobalIndex": true,
+  "algorithm": "hnsw",
   "distanceType": "cosine",
-  "memoryUsageMb": 512,
-  "config": {
-    "m": 16,
-    "efConstruction": 200
-  },
-  "createdAt": "2024-01-15T10:30:00Z",
-  "loadedAt": "2024-01-16T08:00:00Z"
+  "loadedAt": 1700000000000
 }
 ```
 
 ---
 
-#### `POST /indexes`
+#### `POST /indexes/bundle`
 
-Load an existing index from disk or create a new one.
+Load a bundle from disk.
 
-**Request Body (Load from disk):**
+**Request Body:**
 ```json
 {
   "indexId": "products-v1",
-  "indexPath": "/data/indexes/products-v1.hnsw"
-}
-```
-
-**Request Body (Create new with vectors):**
-```json
-{
-  "indexId": "temp-index",
-  "vectors": [
-    {"id": 1, "vector": [0.1, 0.2, 0.3]},
-    {"id": 2, "vector": [0.4, 0.5, 0.6]}
-  ],
-  "config": {
-    "m": 16,
-    "efConstruction": 200,
-    "distanceType": "cosine"
-  }
+  "bundlePath": "/data/indexes/products-v1"
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| indexId | string | Yes | Unique index identifier |
-| indexPath | string | No* | Path to existing index file |
-| vectors | VectorData[] | No* | Vectors to build index from |
-| config.m | int | No | HNSW M parameter (default: 16) |
-| config.efConstruction | int | No | HNSW construction ef (default: 200) |
-| config.distanceType | string | No | "euclidean" or "cosine" (default: "euclidean") |
-
-*Either `indexPath` or `vectors` must be provided.
+| indexId | string | Yes | Unique bundle identifier |
+| bundlePath | string | Yes | Path to bundle root directory |
 
 **Response (201):**
 ```json
 {
-  "success": true,
-  "message": "Index 'products-v1' loaded successfully",
-  "index": {
-    "indexId": "products-v1",
-    "dimension": 256,
-    "size": 500000,
-    "indexPath": "/data/indexes/products-v1.hnsw"
-  }
-}
-```
-
----
-
-#### `POST /indexes/{indexId}/vectors`
-
-Add vectors to an existing index.
-
-**Request Body:**
-```json
-{
-  "vectors": [
-    {"id": 1001, "vector": [0.1, 0.2, 0.3]},
-    {"id": 1002, "vector": [0.4, 0.5, 0.6]}
-  ]
-}
-```
-
-**Response (200):**
-```json
-{
-  "success": true,
-  "message": "Added 2 vectors to index 'products-v1'",
-  "index": {
-    "indexId": "products-v1",
-    "dimension": 256,
-    "size": 500002
-  }
+  "indexId": "products-v1",
+  "bundlePath": "/data/indexes/products-v1",
+  "totalVectors": 500000,
+  "dimension": 256,
+  "numLocalIndexes": 8,
+  "hasGlobalIndex": true,
+  "algorithm": "hnsw",
+  "distanceType": "cosine",
+  "loadedAt": 1700000000000
 }
 ```
 
@@ -448,40 +393,11 @@ Add vectors to an existing index.
 
 #### `DELETE /indexes/{indexId}`
 
-Unload an index from memory.
-
-**Query Parameters:**
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| deleteFile | boolean | false | Also delete the index file from disk |
+Unload a bundle from memory.
 
 **Response (200):**
 ```json
-{
-  "success": true,
-  "message": "Index 'products-v1' unloaded"
-}
-```
-
----
-
-#### `POST /indexes/{indexId}/save`
-
-Save an in-memory index to disk.
-
-**Request Body:**
-```json
-{
-  "path": "/data/indexes/products-v1.hnsw"
-}
-```
-
-**Response (200):**
-```json
-{
-  "success": true,
-  "message": "Index saved to /data/indexes/products-v1.hnsw"
-}
+{}
 ```
 
 ---
@@ -491,7 +407,6 @@ Save an in-memory index to disk.
 ### 5.1 Core Models
 
 ```scala
-// Search
 case class SearchRequest(
   vector: Array[Float],
   k: Int,
@@ -509,7 +424,6 @@ case class SearchResponse(
   queryTimeMs: Long
 )
 
-// Multi-search
 case class MultiSearchRequest(
   vector: Array[Float],
   k: Int,
@@ -529,54 +443,84 @@ case class MultiSearchResponse(
   totalTimeMs: Long
 )
 
-// Index management
-case class LoadIndexRequest(
+case class BatchQueryItem(
+  vector: Array[Float],
+  k: Int
+)
+
+case class BatchSearchRequest(
+  queries: Seq[BatchQueryItem],
   indexId: String,
-  indexPath: String
+  ef: Option[Int] = None
 )
 
-case class CreateIndexRequest(
+case class BatchSearchResultItem(
+  queryIndex: Int,
+  results: Seq[SearchResultItem]
+)
+
+case class BatchSearchResponse(
+  results: Seq[BatchSearchResultItem],
+  totalTimeMs: Long
+)
+
+case class BundleLoadRequest(
   indexId: String,
-  vectors: Option[Seq[VectorData]] = None,
-  indexPath: Option[String] = None,
-  config: Option[IndexConfig] = None
+  bundlePath: String
 )
 
-case class IndexConfig(
-  m: Option[Int] = None,
-  efConstruction: Option[Int] = None,
-  distanceType: Option[String] = None
+case class BundleInfo(
+  indexId: String,
+  bundlePath: String,
+  totalVectors: Long,
+  dimension: Int,
+  numLocalIndexes: Int,
+  hasGlobalIndex: Boolean,
+  algorithm: String,
+  distanceType: String,
+  loadedAt: Long
 )
 
-case class VectorData(
-  id: Long,
-  vector: Array[Float]
-)
-
-case class IndexInfo(
+case class UnifiedIndexEntry(
+  kind: String,
   indexId: String,
   dimension: Int,
-  size: Int,
-  indexPath: Option[String],
-  distanceType: Option[String] = None,
-  memoryUsageMb: Option[Long] = None
+  size: Long,
+  distanceType: String,
+  bundlePath: Option[String] = None,
+  numLocalIndexes: Option[Int] = None,
+  hasGlobalIndex: Option[Boolean] = None,
+  algorithm: Option[String] = None,
+  loadedAt: Long = 0L
 )
 
-// Responses
-case class IndexOperationResponse(
-  success: Boolean,
-  message: String,
-  index: Option[IndexInfo] = None
+case class UnifiedIndexListResponse(
+  indexes: Seq[UnifiedIndexEntry],
+  totalIndexes: Int,
+  totalVectors: Long
+)
+
+case class HealthResponse(
+  status: String,
+  version: String,
+  indexCount: Int,
+  totalVectors: Long
+)
+
+case class ReadinessResponse(
+  ready: Boolean
+)
+
+case class LivenessResponse(
+  alive: Boolean
 )
 
 case class ErrorResponse(
   error: String,
-  message: String,
-  details: Option[Map[String, String]] = None
+  message: String
 )
 ```
 
----
 
 ## 6. Error Handling
 
@@ -630,7 +574,7 @@ All errors return a consistent JSON structure:
    - `POST /indexes/{indexId}/search`
    - `POST /search` (multi-index)
    - `GET /indexes`
-   - `POST /indexes` (load)
+   - `POST /indexes/bundle` (load)
    - `DELETE /indexes/{indexId}`
 
 ### Phase 2: Production Readiness
@@ -708,7 +652,7 @@ curl -X POST http://localhost:8080/api/v1/indexes \
   -H "Content-Type: application/json" \
   -d '{
     "indexId": "products",
-    "indexPath": "/data/indexes/products.hnsw"
+    "bundlePath": "/data/indexes/products.hnsw"
   }'
 
 # Search for similar vectors

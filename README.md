@@ -459,12 +459,10 @@ The server starts at `http://localhost:8080` by default.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/v1/indexes` | List all loaded indexes |
-| GET | `/api/v1/indexes/{indexId}` | Get index details |
-| POST | `/api/v1/indexes` | Load or create index |
-| DELETE | `/api/v1/indexes/{indexId}` | Unload index |
-| POST | `/api/v1/indexes/{indexId}/vectors` | Add vectors |
-| POST | `/api/v1/indexes/{indexId}/save` | Save index to disk |
+| GET | `/api/v1/indexes` | List loaded bundles |
+| GET | `/api/v1/indexes/{indexId}` | Get bundle details |
+| POST | `/api/v1/indexes/bundle` | Load a bundle from disk |
+| DELETE | `/api/v1/indexes/{indexId}` | Unload bundle |
 
 ### Usage Examples
 
@@ -473,15 +471,11 @@ The server starts at `http://localhost:8080` by default.
 curl http://localhost:8080/api/v1/health
 
 # Create an index
-curl -X POST http://localhost:8080/api/v1/indexes \
+curl -X POST http://localhost:8080/api/v1/indexes/bundle \
   -H "Content-Type: application/json" \
   -d '{
     "indexId": "products",
-    "vectors": [
-      {"id": 1, "vector": [0.1, 0.2, 0.3, 0.4]},
-      {"id": 2, "vector": [0.5, 0.6, 0.7, 0.8]}
-    ],
-    "config": {"m": 16, "efConstruction": 200, "distanceType": "cosine"}
+    "bundlePath": "/data/bundles/products-2026-05-14"
   }'
 
 # Search for nearest neighbors
@@ -536,7 +530,7 @@ curl -X POST http://localhost:8080/api/v1/indexes/bundle \
 ```
 
 The server eagerly loads every local HNSW + the global routing index,
-exposes the bundle alongside any flat single-`.hnsw` indexes, and
+exposes the bundle as the only supported server-side index model, and
 becomes ready for queries.
 
 **Step 3 — search through the bundle:**
@@ -552,14 +546,13 @@ batchSearch uses (via the shared `index-bundle` module). When `pk` was
 set at build time, the `id` field in each result IS the user's product
 id — no offset translation needed.
 
-**List loaded indexes (mixed flat + bundle):**
+**List loaded bundles:**
 
 ```bash
 curl http://localhost:8080/api/v1/indexes
 ```
 
-Each entry carries a `kind` field (`"flat"` or `"bundle"`) so clients
-can branch cleanly.
+Each entry carries a `kind` field (`"bundle"`) so clients can branch cleanly.
 
 **Implementation pointers**
 

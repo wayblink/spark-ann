@@ -46,7 +46,7 @@
     
     "index_type": {
       "type": "string",
-      "enum": ["hnsw", "ivf", "lsh", "flat"],
+      "enum": ["hnsw", "ivf", "lsh"],
       "description": "索引类型"
     },
     

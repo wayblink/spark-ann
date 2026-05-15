@@ -406,11 +406,8 @@ Danger:    Background #da3633, Hover #f85149
 | Load dashboard stats | `/api/v1/health` | GET |
 | List all indexes | `/api/v1/indexes` | GET |
 | Get index details | `/api/v1/indexes/{id}` | GET |
-| Create new index | `/api/v1/indexes` | POST (with vectors) |
-| Load index from disk | `/api/v1/indexes` | POST (with indexPath) |
-| Unload index | `/api/v1/indexes/{id}` | DELETE |
-| Add vectors | `/api/v1/indexes/{id}/vectors` | POST |
-| Save index to disk | `/api/v1/indexes/{id}/save` | POST |
+| Load bundle from disk | `/api/v1/indexes/bundle` | POST |
+| Unload bundle | `/api/v1/indexes/{id}` | DELETE |
 | Single index search | `/api/v1/indexes/{id}/search` | POST |
 | Multi-index search | `/api/v1/search` | POST |
 | Batch search | `/api/v1/search/batch` | POST |
@@ -426,7 +423,7 @@ Danger:    Background #da3633, Hover #f85149
 4. On success → redirect to Dashboard
 5. Dashboard loads stats and index list
 
-### Flow 2: Creating an Index
+### Flow 2: Loading a Bundle
 1. Navigate to Indexes page
 2. Click "+ Create Index"
 3. Enter Index ID
