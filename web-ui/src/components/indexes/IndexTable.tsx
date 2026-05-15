@@ -1,44 +1,27 @@
 import { useState } from 'react'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useIndexes, useDeleteIndex } from '@/api/hooks'
 import { IndexDetailsDialog } from './IndexDetailsDialog'
 import { Trash2, Eye } from 'lucide-react'
-import type { IndexInfo } from '@/types/api'
+import type { UnifiedIndexEntry } from '@/types/api'
 
 export function IndexTable() {
   const { data: indexList, isLoading, isError } = useIndexes()
   const deleteMutation = useDeleteIndex()
-  const [selectedIndex, setSelectedIndex] = useState<IndexInfo | null>(null)
+  const [selectedIndex, setSelectedIndex] = useState<UnifiedIndexEntry | null>(null)
 
   const handleDelete = (indexId: string) => {
-    if (confirm(`Delete index "${indexId}"?`)) {
+    if (confirm(`Delete bundle "${indexId}"?`)) {
       deleteMutation.mutate(indexId)
     }
   }
 
-  if (isLoading) {
-    return <p className="text-muted-foreground">Loading indexes...</p>
-  }
-
-  if (isError) {
-    return <p className="text-destructive">Failed to load indexes</p>
-  }
-
+  if (isLoading) return <p className="text-muted-foreground">Loading bundles...</p>
+  if (isError) return <p className="text-destructive">Failed to load bundles</p>
   if (!indexList?.indexes.length) {
-    return (
-      <p className="text-muted-foreground">
-        No indexes loaded. Create or load an index to get started.
-      </p>
-    )
+    return <p className="text-muted-foreground">No bundles loaded. Load a bundle to get started.</p>
   }
 
   return (
@@ -46,7 +29,7 @@ export function IndexTable() {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Index ID</TableHead>
+            <TableHead>Bundle ID</TableHead>
             <TableHead>Dimension</TableHead>
             <TableHead>Vectors</TableHead>
             <TableHead>Distance Type</TableHead>
@@ -61,20 +44,14 @@ export function IndexTable() {
               <TableCell>{index.dimension}</TableCell>
               <TableCell>{index.size.toLocaleString()}</TableCell>
               <TableCell>
-                <Badge variant="secondary">
-                  {index.distanceType || 'euclidean'}
-                </Badge>
+                <Badge variant="secondary">{index.distanceType}</Badge>
               </TableCell>
               <TableCell className="max-w-[200px] truncate text-muted-foreground">
-                {index.indexPath || '-'}
+                {index.bundlePath || '-'}
               </TableCell>
               <TableCell className="text-right">
                 <div className="flex justify-end gap-2">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setSelectedIndex(index)}
-                  >
+                  <Button variant="ghost" size="icon" onClick={() => setSelectedIndex(index)}>
                     <Eye className="h-4 w-4" />
                   </Button>
                   <Button

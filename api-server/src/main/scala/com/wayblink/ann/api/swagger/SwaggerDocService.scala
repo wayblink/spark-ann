@@ -31,7 +31,7 @@ object SwaggerDocService extends SwaggerHttpService {
         |Spark-ANN provides high-performance approximate nearest neighbor (ANN) search
         |using the HNSW algorithm. This API allows you to:
         |
-        |- Manage vector indexes (create, load, save, delete)
+        |- Manage loaded bundles
         |- Search for similar vectors (single, multi-index, batch)
         |- Monitor service health
         |""".stripMargin

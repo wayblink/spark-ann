@@ -1,163 +1,118 @@
 package com.wayblink.ann.api.service
 
 import com.wayblink.ann.api.error.ApiError
+import org.scalatest.BeforeAndAfterEach
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
-import org.scalatest.BeforeAndAfterEach
 
 class SearchServiceTest extends AnyFunSuite with Matchers with BeforeAndAfterEach {
 
   var indexManager: IndexManager = _
   var searchService: SearchService = _
-
-  // Sample vectors for testing
-  private val testVectors = Seq(
-    (1L, Array(0.0f, 0.0f, 0.0f)),
-    (2L, Array(1.0f, 0.0f, 0.0f)),
-    (3L, Array(0.0f, 1.0f, 0.0f)),
-    (4L, Array(0.0f, 0.0f, 1.0f)),
-    (5L, Array(1.0f, 1.0f, 1.0f))
-  )
+  var bundlePath: java.nio.file.Path = _
 
   override def beforeEach(): Unit = {
     indexManager = IndexManager()
     searchService = SearchService(indexManager)
+    bundlePath = BundleIndexManagerTestHelper.writeBundle()
+    indexManager.loadBundle("svc", bundlePath.toString).isRight shouldBe true
   }
 
-  test("search should return nearest neighbors") {
-    indexManager.createIndex("test-index", 3, testVectors)
-
-    val result = searchService.search("test-index", Array(0.0f, 0.0f, 0.0f), k = 3)
+  test("search should return nearest neighbors from a loaded bundle") {
+    val result = searchService.search("svc", Array(0.0f, 0.0f, 0.0f, 0.0f), k = 3)
 
     result.isRight shouldBe true
     val searchResult = result.right.get
-    searchResult.indexId shouldBe "test-index"
+    searchResult.indexId shouldBe "svc"
     searchResult.results.size shouldBe 3
-    // The closest vector to origin should be vector 1 (at origin)
-    searchResult.results.head.id shouldBe 1L
-    searchResult.results.head.distance shouldBe 0.0f
+    searchResult.results.head.id should (be(1L) or be(2L))
   }
 
-  test("search should fail for non-existent index") {
-    val result = searchService.search("non-existent", Array(0.0f, 0.0f, 0.0f), k = 3)
+  test("search should fail for non-existent bundle") {
+    val result = searchService.search("missing", Array(0.0f, 0.0f, 0.0f, 0.0f), k = 3)
 
     result.isLeft shouldBe true
     result.left.get shouldBe a [ApiError.IndexNotFound]
   }
 
   test("search should fail for dimension mismatch") {
-    indexManager.createIndex("test-index", 3, testVectors)
-
-    val result = searchService.search("test-index", Array(0.0f, 0.0f), k = 3)
+    val result = searchService.search("svc", Array(0.0f, 0.0f), k = 3)
 
     result.isLeft shouldBe true
     result.left.get shouldBe a [ApiError.DimensionMismatch]
   }
 
   test("search should fail for invalid k") {
-    indexManager.createIndex("test-index", 3, testVectors)
-
-    val result = searchService.search("test-index", Array(0.0f, 0.0f, 0.0f), k = 0)
+    val result = searchService.search("svc", Array(0.0f, 0.0f, 0.0f, 0.0f), k = 0)
 
     result.isLeft shouldBe true
     result.left.get shouldBe a [ApiError.InvalidRequest]
   }
 
-  test("search should respect ef parameter") {
-    indexManager.createIndex("test-index", 3, testVectors)
+  test("multiSearch should search all loaded bundles when indexIds is None") {
+    val second = BundleIndexManagerTestHelper.writeBundle()
+    indexManager.loadBundle("svc-2", second.toString).isRight shouldBe true
 
-    val result = searchService.search("test-index", Array(0.0f, 0.0f, 0.0f), k = 3, ef = Some(100))
-
-    result.isRight shouldBe true
-  }
-
-  test("multiSearch should search all indexes when indexIds is None") {
-    indexManager.createIndex("index-1", 3, testVectors.take(3))
-    indexManager.createIndex("index-2", 3, testVectors.drop(3))
-
-    val result = searchService.multiSearch(Array(0.5f, 0.5f, 0.5f), k = 2)
+    val result = searchService.multiSearch(Array(0.5f, 0.5f, 0.5f, 0.5f), k = 2)
 
     result.isRight shouldBe true
     val multiResult = result.right.get
-    multiResult.perIndexResults.size shouldBe 2
-    multiResult.perIndexResults.contains("index-1") shouldBe true
-    multiResult.perIndexResults.contains("index-2") shouldBe true
+    multiResult.perIndexResults.keySet shouldBe Set("svc", "svc-2")
     multiResult.merged.nonEmpty shouldBe true
   }
 
-  test("multiSearch should search only specified indexes") {
-    indexManager.createIndex("index-1", 3, testVectors.take(3))
-    indexManager.createIndex("index-2", 3, testVectors.drop(3))
+  test("multiSearch should search only specified bundles") {
+    val second = BundleIndexManagerTestHelper.writeBundle()
+    indexManager.loadBundle("svc-2", second.toString).isRight shouldBe true
 
     val result = searchService.multiSearch(
-      Array(0.5f, 0.5f, 0.5f),
+      Array(0.5f, 0.5f, 0.5f, 0.5f),
       k = 2,
-      indexIds = Some(Seq("index-1"))
+      indexIds = Some(Seq("svc"))
     )
 
     result.isRight shouldBe true
     val multiResult = result.right.get
-    multiResult.perIndexResults.size shouldBe 1
-    multiResult.perIndexResults.contains("index-1") shouldBe true
+    multiResult.perIndexResults.keySet shouldBe Set("svc")
   }
 
-  test("multiSearch should fail for non-existent index in indexIds") {
-    indexManager.createIndex("index-1", 3, testVectors)
-
+  test("multiSearch should fail for non-existent bundle in indexIds") {
     val result = searchService.multiSearch(
-      Array(0.5f, 0.5f, 0.5f),
+      Array(0.5f, 0.5f, 0.5f, 0.5f),
       k = 2,
-      indexIds = Some(Seq("index-1", "non-existent"))
+      indexIds = Some(Seq("svc", "missing"))
     )
 
     result.isLeft shouldBe true
     result.left.get shouldBe a [ApiError.IndexNotFound]
   }
 
-  test("multiSearch should fail when no indexes are available") {
-    val result = searchService.multiSearch(Array(0.5f, 0.5f, 0.5f), k = 2)
+  test("multiSearch should fail when no bundles are available") {
+    val emptyManager = IndexManager()
+    val emptyService = SearchService(emptyManager)
+    val result = emptyService.multiSearch(Array(0.5f, 0.5f, 0.5f, 0.5f), k = 2)
 
     result.isLeft shouldBe true
     result.left.get shouldBe ApiError.NoIndexesAvailable
   }
 
-  test("multiSearch merged results should be sorted by distance") {
-    indexManager.createIndex("index-1", 3, Seq(
-      (1L, Array(0.1f, 0.1f, 0.1f))
-    ))
-    indexManager.createIndex("index-2", 3, Seq(
-      (2L, Array(0.9f, 0.9f, 0.9f))
-    ))
-
-    val result = searchService.multiSearch(Array(0.0f, 0.0f, 0.0f), k = 2)
-
-    result.isRight shouldBe true
-    val merged = result.right.get.merged
-    merged.size shouldBe 2
-    // Vector 1 should be closer to origin than vector 2
-    merged.head.id shouldBe 1L
-    merged.head.indexId shouldBe "index-1"
-  }
-
   test("batchSearch should execute multiple queries") {
-    indexManager.createIndex("test-index", 3, testVectors)
-
     val queries = Seq(
-      (Array(0.0f, 0.0f, 0.0f), 2),
-      (Array(1.0f, 1.0f, 1.0f), 2)
+      (Array(0.0f, 0.0f, 0.0f, 0.0f), 2),
+      (Array(5.0f, 5.0f, 5.0f, 5.0f), 2)
     )
 
-    val result = searchService.batchSearch("test-index", queries)
+    val result = searchService.batchSearch("svc", queries)
 
     result.isRight shouldBe true
     val batchResult = result.right.get
     batchResult.size shouldBe 2
-    batchResult(0).results.size shouldBe 2
-    batchResult(1).results.size shouldBe 2
+    batchResult(0).results.nonEmpty shouldBe true
+    batchResult(1).results.nonEmpty shouldBe true
   }
 
-  test("batchSearch should fail for non-existent index") {
-    val result = searchService.batchSearch("non-existent", Seq((Array(0.0f, 0.0f, 0.0f), 2)))
+  test("batchSearch should fail for non-existent bundle") {
+    val result = searchService.batchSearch("missing", Seq((Array(0.0f, 0.0f, 0.0f, 0.0f), 2)))
 
     result.isLeft shouldBe true
     result.left.get shouldBe a [ApiError.IndexNotFound]

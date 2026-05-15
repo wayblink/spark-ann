@@ -1,23 +1,18 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from './client'
 import type {
+  BundleInfo,
+  BundleLoadRequest,
   HealthResponse,
-  IndexListResponse,
-  IndexInfo,
-  IndexOperationResponse,
-  CreateIndexRequest,
-  LoadIndexRequest,
-  AddVectorsRequest,
-  SaveIndexRequest,
   SearchRequest,
   SearchResponse,
   MultiSearchRequest,
   MultiSearchResponse,
   BatchSearchRequest,
   BatchSearchResponse,
+  UnifiedIndexListResponse,
+  UnifiedIndexEntry,
 } from '@/types/api'
-
-// Health & Status hooks
 
 export function useHealth() {
   return useQuery<HealthResponse>({
@@ -30,10 +25,8 @@ export function useHealth() {
   })
 }
 
-// Index Management hooks
-
 export function useIndexes() {
-  return useQuery<IndexListResponse>({
+  return useQuery<UnifiedIndexListResponse>({
     queryKey: ['indexes'],
     queryFn: async () => {
       const { data } = await apiClient.get('/indexes')
@@ -43,7 +36,7 @@ export function useIndexes() {
 }
 
 export function useIndex(indexId: string) {
-  return useQuery<IndexInfo>({
+  return useQuery<UnifiedIndexEntry>({
     queryKey: ['indexes', indexId],
     queryFn: async () => {
       const { data } = await apiClient.get(`/indexes/${indexId}`)
@@ -53,25 +46,11 @@ export function useIndex(indexId: string) {
   })
 }
 
-export function useCreateIndex() {
+export function useLoadBundle() {
   const queryClient = useQueryClient()
-  return useMutation<IndexOperationResponse, Error, CreateIndexRequest>({
+  return useMutation<BundleInfo, Error, BundleLoadRequest>({
     mutationFn: async (request) => {
-      const { data } = await apiClient.post('/indexes', request)
-      return data
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['indexes'] })
-      queryClient.invalidateQueries({ queryKey: ['health'] })
-    },
-  })
-}
-
-export function useLoadIndex() {
-  const queryClient = useQueryClient()
-  return useMutation<IndexOperationResponse, Error, LoadIndexRequest>({
-    mutationFn: async (request) => {
-      const { data } = await apiClient.post('/indexes/load', request)
+      const { data } = await apiClient.post('/indexes/bundle', request)
       return data
     },
     onSuccess: () => {
@@ -83,10 +62,9 @@ export function useLoadIndex() {
 
 export function useDeleteIndex() {
   const queryClient = useQueryClient()
-  return useMutation<IndexOperationResponse, Error, string>({
+  return useMutation<void, Error, string>({
     mutationFn: async (indexId) => {
-      const { data } = await apiClient.delete(`/indexes/${indexId}`)
-      return data
+      await apiClient.delete(`/indexes/${indexId}`)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['indexes'] })
@@ -94,31 +72,6 @@ export function useDeleteIndex() {
     },
   })
 }
-
-export function useAddVectors(indexId: string) {
-  const queryClient = useQueryClient()
-  return useMutation<IndexOperationResponse, Error, AddVectorsRequest>({
-    mutationFn: async (request) => {
-      const { data } = await apiClient.post(`/indexes/${indexId}/vectors`, request)
-      return data
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['indexes'] })
-      queryClient.invalidateQueries({ queryKey: ['health'] })
-    },
-  })
-}
-
-export function useSaveIndex(indexId: string) {
-  return useMutation<IndexOperationResponse, Error, SaveIndexRequest>({
-    mutationFn: async (request) => {
-      const { data } = await apiClient.post(`/indexes/${indexId}/save`, request)
-      return data
-    },
-  })
-}
-
-// Search hooks
 
 export function useSearch(indexId: string) {
   return useMutation<SearchResponse, Error, SearchRequest>({

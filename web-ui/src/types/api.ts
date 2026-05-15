@@ -57,56 +57,42 @@ export interface BatchSearchResponse {
   totalTimeMs: number
 }
 
-// Index Management API types
+// Bundle API types
 
-export interface LoadIndexRequest {
+export interface BundleLoadRequest {
   indexId: string
-  indexPath: string
+  bundlePath: string
 }
 
-export interface IndexConfig {
-  m?: number
-  efConstruction?: number
-  distanceType?: string
-}
-
-export interface CreateIndexRequest {
+export interface BundleInfo {
   indexId: string
-  vectors: VectorData[]
-  config?: IndexConfig
+  bundlePath: string
+  totalVectors: number
+  dimension: number
+  numLocalIndexes: number
+  hasGlobalIndex: boolean
+  algorithm: string
+  distanceType: string
+  loadedAt: number
 }
 
-export interface AddVectorsRequest {
-  vectors: VectorData[]
-}
-
-export interface SaveIndexRequest {
-  path: string
-}
-
-export interface VectorData {
-  id: number
-  vector: number[]
-}
-
-export interface IndexInfo {
+export interface UnifiedIndexEntry {
+  kind: 'bundle'
   indexId: string
   dimension: number
   size: number
-  indexPath?: string
-  distanceType?: string
+  distanceType: string
+  bundlePath?: string
+  numLocalIndexes?: number
+  hasGlobalIndex?: boolean
+  algorithm?: string
+  loadedAt: number
 }
 
-export interface IndexListResponse {
-  indexes: IndexInfo[]
+export interface UnifiedIndexListResponse {
+  indexes: UnifiedIndexEntry[]
   totalIndexes: number
   totalVectors: number
-}
-
-export interface IndexOperationResponse {
-  success: boolean
-  message: string
-  index?: IndexInfo
 }
 
 // Health & Status API types

@@ -114,7 +114,7 @@ class SearchRoutes(searchService: SearchService, indexManager: IndexManager) {
   @Path("/indexes/{indexId}/search")
   @Operation(
     summary = "Search a single index",
-    description = "Find k nearest neighbors in the specified index (flat or bundle)",
+    description = "Find k nearest neighbors in the specified bundle index",
     parameters = Array(
       new Parameter(
         name = "indexId",

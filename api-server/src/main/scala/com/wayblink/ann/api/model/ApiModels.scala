@@ -135,112 +135,72 @@ case class BatchSearchResponse(
 // ==================== Index Management API ====================
 
 /**
- * Request to load an index from disk.
+ * Request payload for loading an offline-built bundle into the api-server.
  *
- * @param indexId   Unique ID for this index
- * @param indexPath Path to the index file
+ * @param indexId    Identifier the bundle will be served under
+ * @param bundlePath Filesystem path to the bundle root directory
  */
-case class LoadIndexRequest(
+case class BundleLoadRequest(
   indexId: String,
-  indexPath: String
+  bundlePath: String
 )
 
 /**
- * Configuration for index creation.
+ * Summary of a loaded bundle.
  *
- * @param m              HNSW M parameter (optional)
- * @param efConstruction HNSW efConstruction parameter (optional)
- * @param distanceType   Distance type: "euclidean" or "cosine" (optional)
+ * @param indexId         Index identifier
+ * @param bundlePath      Bundle root path
+ * @param totalVectors    Total vectors across all local indexes
+ * @param dimension       Vector dimension
+ * @param numLocalIndexes Number of local indexes
+ * @param hasGlobalIndex  Whether a global routing index exists
+ * @param algorithm       Index algorithm id
+ * @param distanceType    Distance metric used
+ * @param loadedAt        Load timestamp
  */
-case class IndexConfig(
-  m: Option[Int] = None,
-  efConstruction: Option[Int] = None,
-  distanceType: Option[String] = None
-)
-
-/**
- * Request to create an index from vectors.
- *
- * @param indexId   Unique ID for this index
- * @param vectors   Vectors to add (id, vector pairs)
- * @param config    Index configuration (optional)
- */
-case class CreateIndexRequest(
+case class BundleInfo(
   indexId: String,
-  vectors: Seq[VectorData],
-  config: Option[IndexConfig] = None
+  bundlePath: String,
+  totalVectors: Long,
+  dimension: Int,
+  numLocalIndexes: Int,
+  hasGlobalIndex: Boolean,
+  algorithm: String,
+  distanceType: String,
+  loadedAt: Long
 )
 
 /**
- * Request to add vectors to an existing index.
+ * Unified listing entry for bundles.
  *
- * @param vectors Vectors to add
+ * @param kind          JSON discriminator, currently always "bundle"
+ * @param indexId       Index identifier
+ * @param dimension     Vector dimension
+ * @param size          Total vector count
+ * @param distanceType  Distance metric used
+ * @param bundlePath    Bundle root path
+ * @param numLocalIndexes Number of local indexes
+ * @param hasGlobalIndex Whether a global routing index exists
+ * @param algorithm     Algorithm id
+ * @param loadedAt      Load timestamp
  */
-case class AddVectorsRequest(
-  vectors: Seq[VectorData]
-)
-
-/**
- * Request to save an index to disk.
- *
- * @param path Path to save the index to
- */
-case class SaveIndexRequest(
-  path: String
-)
-
-/**
- * Vector data for index creation.
- *
- * @param id     Vector ID
- * @param vector Vector values
- */
-case class VectorData(
-  id: Long,
-  vector: Array[Float]
-)
-
-/**
- * Information about a loaded index.
- *
- * @param indexId      Index identifier
- * @param dimension    Vector dimension
- * @param size         Number of vectors
- * @param indexPath    Path where index is stored (if loaded from disk)
- * @param distanceType Distance metric used
- */
-case class IndexInfo(
+case class UnifiedIndexEntry(
+  kind: String,
   indexId: String,
   dimension: Int,
-  size: Int,
-  indexPath: Option[String],
-  distanceType: Option[String] = None
+  size: Long,
+  distanceType: String,
+  bundlePath: Option[String] = None,
+  numLocalIndexes: Option[Int] = None,
+  hasGlobalIndex: Option[Boolean] = None,
+  algorithm: Option[String] = None,
+  loadedAt: Long = 0L
 )
 
-/**
- * Response for listing all indexes.
- *
- * @param indexes      List of loaded indexes
- * @param totalIndexes Total number of indexes
- * @param totalVectors Total vectors across all indexes
- */
-case class IndexListResponse(
-  indexes: Seq[IndexInfo],
+case class UnifiedIndexListResponse(
+  indexes: Seq[UnifiedIndexEntry],
   totalIndexes: Int,
   totalVectors: Long
-)
-
-/**
- * Response for index operations.
- *
- * @param success Whether the operation succeeded
- * @param message Description of result
- * @param index   Index info (if applicable)
- */
-case class IndexOperationResponse(
-  success: Boolean,
-  message: String,
-  index: Option[IndexInfo] = None
 )
 
 // ==================== Health & Status API ====================
@@ -289,65 +249,6 @@ case class ErrorResponse(
   message: String
 )
 
-// ==================== Bundle-mode DTOs (pattern B) ====================
-
-/**
- * Request payload for loading an offline-built bundle into the
- * api-server. Distinct from LoadIndexRequest (single flat .hnsw) so
- * each path has a clear shape on the wire.
- *
- * @param indexId    Identifier the bundle will be served under
- * @param bundlePath Filesystem path to the bundle root directory
- */
-case class BundleLoadRequest(
-  indexId: String,
-  bundlePath: String
-)
-
-/**
- * Summary of a loaded bundle. Returned by bundle CRUD endpoints and
- * by the listing endpoint when the entry is a bundle (distinguished
- * from flat IndexInfo via the `kind` discriminator).
- */
-case class BundleInfo(
-  indexId: String,
-  bundlePath: String,
-  totalVectors: Long,
-  dimension: Int,
-  numLocalIndexes: Int,
-  hasGlobalIndex: Boolean,
-  algorithm: String,
-  distanceType: String,
-  loadedAt: Long
-)
-
-/**
- * Unified listing entry. `kind` is the JSON discriminator:
- *   - "flat"   → flat field set (size, distanceType, ...) matches IndexInfo
- *   - "bundle" → bundle field set (numLocalIndexes, ...) matches BundleInfo
- *
- * Encoded inline so clients can branch on `kind` without a wrapper.
- */
-case class UnifiedIndexEntry(
-  kind: String,
-  indexId: String,
-  dimension: Int,
-  size: Long,
-  distanceType: String,
-  indexPath: Option[String] = None,
-  bundlePath: Option[String] = None,
-  numLocalIndexes: Option[Int] = None,
-  hasGlobalIndex: Option[Boolean] = None,
-  algorithm: Option[String] = None,
-  loadedAt: Long = 0L
-)
-
-case class UnifiedIndexListResponse(
-  indexes: Seq[UnifiedIndexEntry],
-  totalIndexes: Int,
-  totalVectors: Long
-)
-
 // ==================== JSON Protocols ====================
 
 object ApiJsonProtocol extends DefaultJsonProtocol {
@@ -365,7 +266,6 @@ object ApiJsonProtocol extends DefaultJsonProtocol {
   }
 
   // Search models
-  implicit val vectorDataFormat: RootJsonFormat[VectorData] = jsonFormat2(VectorData)
   implicit val searchRequestFormat: RootJsonFormat[SearchRequest] = jsonFormat3(SearchRequest)
   implicit val searchResultItemFormat: RootJsonFormat[SearchResultItem] = jsonFormat2(SearchResultItem)
   implicit val mergedSearchResultItemFormat: RootJsonFormat[MergedSearchResultItem] = jsonFormat3(MergedSearchResultItem)
@@ -379,25 +279,15 @@ object ApiJsonProtocol extends DefaultJsonProtocol {
   implicit val batchSearchResultItemFormat: RootJsonFormat[BatchSearchResultItem] = jsonFormat2(BatchSearchResultItem)
   implicit val batchSearchResponseFormat: RootJsonFormat[BatchSearchResponse] = jsonFormat2(BatchSearchResponse)
 
-  // Index management models
-  implicit val loadIndexRequestFormat: RootJsonFormat[LoadIndexRequest] = jsonFormat2(LoadIndexRequest)
-  implicit val indexConfigFormat: RootJsonFormat[IndexConfig] = jsonFormat3(IndexConfig)
-  implicit val createIndexRequestFormat: RootJsonFormat[CreateIndexRequest] = jsonFormat3(CreateIndexRequest)
-  implicit val addVectorsRequestFormat: RootJsonFormat[AddVectorsRequest] = jsonFormat1(AddVectorsRequest)
-  implicit val saveIndexRequestFormat: RootJsonFormat[SaveIndexRequest] = jsonFormat1(SaveIndexRequest)
-  implicit val indexInfoFormat: RootJsonFormat[IndexInfo] = jsonFormat5(IndexInfo)
-  implicit val indexListResponseFormat: RootJsonFormat[IndexListResponse] = jsonFormat3(IndexListResponse)
-  implicit val indexOperationResponseFormat: RootJsonFormat[IndexOperationResponse] = jsonFormat3(IndexOperationResponse)
+  // Bundle management models
+  implicit val bundleLoadRequestFormat: RootJsonFormat[BundleLoadRequest] = jsonFormat2(BundleLoadRequest)
+  implicit val bundleInfoFormat: RootJsonFormat[BundleInfo] = jsonFormat9(BundleInfo)
+  implicit val unifiedIndexEntryFormat: RootJsonFormat[UnifiedIndexEntry] = jsonFormat10(UnifiedIndexEntry.apply)
+  implicit val unifiedIndexListResponseFormat: RootJsonFormat[UnifiedIndexListResponse] = jsonFormat3(UnifiedIndexListResponse)
 
   // Health models
   implicit val healthResponseFormat: RootJsonFormat[HealthResponse] = jsonFormat4(HealthResponse)
   implicit val readinessResponseFormat: RootJsonFormat[ReadinessResponse] = jsonFormat1(ReadinessResponse)
   implicit val livenessResponseFormat: RootJsonFormat[LivenessResponse] = jsonFormat1(LivenessResponse)
   implicit val errorResponseFormat: RootJsonFormat[ErrorResponse] = jsonFormat2(ErrorResponse)
-
-  // Bundle DTOs (pattern B)
-  implicit val bundleLoadRequestFormat: RootJsonFormat[BundleLoadRequest] = jsonFormat2(BundleLoadRequest)
-  implicit val bundleInfoFormat: RootJsonFormat[BundleInfo] = jsonFormat9(BundleInfo)
-  implicit val unifiedIndexEntryFormat: RootJsonFormat[UnifiedIndexEntry] = jsonFormat11(UnifiedIndexEntry)
-  implicit val unifiedIndexListResponseFormat: RootJsonFormat[UnifiedIndexListResponse] = jsonFormat3(UnifiedIndexListResponse)
 }
