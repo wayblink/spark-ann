@@ -137,6 +137,8 @@ results.show(false)
 
 ### 2.3 用 spark-submit 提交到集群
 
+> ⚠️ **本节需要本地装 Apache Spark 3.5**（提供 `spark-submit` 命令）。如果你只想本机跑通而没装 Spark，跳到 §2.4，用 `sbt sparkIntegration/Test/runMain ...` 等效入口。
+
 把上面的 Scala 代码打成你自己的 jar，或直接复用现成的 `OfflineSmoke` 例子：
 
 ```bash
@@ -160,7 +162,17 @@ spark-submit \
   spark-ann-integration-assembly.jar
 ```
 
-### 2.4 常见配置项
+### 2.4 没装 Spark 时的本地等效入口
+
+如果你只想在开发机上跑通离线建索引（无 `spark-submit`），用 sbt 的测试-scope runMain：
+
+```bash
+sbt 'sparkIntegration/Test/runMain com.wayblink.ann.spark.examples.OfflineSmoke /tmp/my-bundle 1000 32'
+```
+
+为什么是 `Test/runMain` 而不是 `runMain`？— Spark 在 `build.sbt` 里是 `% Provided`，所以 main scope 的 classpath 没有 Spark；Test scope 把 Spark 完整带回来。这是开发友好路径，**生产仍走 §2.3 的 spark-submit**。
+
+### 2.5 常见配置项
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
@@ -176,6 +188,8 @@ spark-submit \
 ## 3. 路径 B：PySpark 用户
 
 > 适合：用 Python 数据栈、Jupyter、ML 工程师。
+>
+> ⚠️ **Python 版本兼容性**：PySpark 3.5 官方支持 Python 3.8 - 3.11。Python 3.13 / 3.14 上 PySpark 仍可装，但部分 worker-side 行为（特别是 cloudpickle 相关）未经充分测试。推荐先在 **3.9 ~ 3.11** 上跑通；3.12+ 视为实验性。我们 CI 验过 8/8 PyTest 通过在 3.8。
 
 ### 3.1 安装
 
@@ -337,18 +351,7 @@ curl -X POST http://localhost:18080/api/v1/indexes/products/search \
 
 `id` 字段直接就是你之前 `pk` 列的值（10000000 + i*7 形态）。
 
-### 4.4 用 spark-submit 离线建 + 本地 serve 跑全套
-
-完整的 e2e 校验脚本：
-
-```bash
-examples/shell/run_e2e_smoke.sh
-```
-
-它会跑：preflight → 构 JAR → sbt 跑 OfflineSmoke 建 bundle → 启 api-server → 加载 → 查询 → 验 pk passthrough → 退出清理。
-读它的源码是了解整条流水线最快的方式。
-
-### 4.5 Docker Compose 一键起
+### 4.4 Docker Compose 一键起
 
 适合演示和 CI。`docker-compose.yml` 已经写好：
 
@@ -386,11 +389,34 @@ curl -X POST http://localhost:8080/api/v1/indexes/bundle \
 | 真生产，离线大量数据 | 路径 A or B（建索引）+ 路径 C 部署 api-server 副本 |
 | 没数据，只想看接口 | `docker compose up -d` 然后调 `/api/v1` |
 
+### 一键跑通 A + C 的脚本
+
+如果你只是想**看一眼整条流水线**到底什么样，跑这个：
+
+```bash
+examples/shell/run_e2e_smoke.sh
+```
+
+它会自动：preflight → 构 JAR（如缺）→ sbt 调 `OfflineSmoke` 建 bundle → 启 api-server → POST 加载 → POST 查询 → 验证 pk passthrough → 退出清理。约 30 秒完成（首次构 JAR 时长一些）。读它的源码是了解端到端流程最快的方式。
+
 ---
 
 ## 6. 常见错误 (Troubleshooting)
 
-### `Failed to load bundle: BundleNotFound(...)`
+api-server 把内部错误归一化成下面这种 JSON：
+
+```json
+{ "error": "<error_code>", "message": "<human-readable>" }
+```
+
+各错误码及对应 HTTP 状态码在 §6 各子节里列出。完整 ADT 见 `api-server/src/main/scala/com/wayblink/ann/api/error/ApiError.scala`。
+
+### `error: bundle_not_found` → HTTP 404
+
+```bash
+curl -X POST /api/v1/indexes/bundle -d '{"indexId":"foo","bundlePath":"/no/such/dir"}'
+# {"error":"bundle_not_found","message":"Bundle not found at '/no/such/dir'"}
+```
 
 bundle 路径不对，或者目录里没有 `ann_index.json`。检查：
 
@@ -399,17 +425,37 @@ ls -la /your/bundle/path
 # 应该看到 ann_index.json + local/ + global/
 ```
 
-### `Failed to load bundle: InvalidBundle(...)` + 提示 newer version
+### `error: invalid_bundle` → HTTP 400（含 "newer than supported"）
 
-bundle 是用更新版本的 spark-ann 建的。升级 api-server 这边的 spark-ann 版本，或重建 bundle。版本规则见 [`BUNDLE_SPEC.md`](BUNDLE_SPEC.md) §8。
+bundle 是用更新版本的 spark-ann 建的，envelope `version` 超过当前 reader 已知最大。升级 api-server 这边的 spark-ann 版本，或重建 bundle。版本规则见 [`BUNDLE_SPEC.md`](BUNDLE_SPEC.md) §8。
 
-### `DimensionMismatch`
+### `error: dimension_mismatch` → HTTP 422
 
-查询向量长度和 bundle 的 `dimension` 不一致。看 `GET /api/v1/indexes/<id>` 的 `dimension` 字段，对照查询向量长度。
+```bash
+# 查询向量长度 != bundle 的 dimension
+# {"error":"dimension_mismatch","message":"Query dimension 5 doesn't match index dimension 32"}
+```
 
-### `Pk column 'xxx' must be INT32 or INT64, got BINARY`
+看 `GET /api/v1/indexes/<id>` 的 `dimension` 字段，对照查询向量长度。
 
-你的 pk 列是 String/UUID。当前版本只支持整型 pk。可以：
+### `error: invalid_request` → HTTP 400
+
+最常见触发：
+
+- 空向量 (`vector: []`)
+- `k <= 0` 或 `k > 1000`
+- `ef <= 0`
+- 创建/加载时 `indexId` 或 `vectors`/`bundlePath` 为空
+
+错误消息会指出具体原因。
+
+### `error: index_already_exists` → HTTP 409
+
+同名 indexId 已经加载。先 `DELETE /api/v1/indexes/<id>` 卸载再重新加载。
+
+### `Pk column 'xxx' must be INT32 or INT64, got BINARY`（构建时）
+
+这是**离线建索引**阶段的错误（不是 api-server 错误码）：你的 pk 列是 String/UUID。当前版本只支持整型 pk。可以：
 
 1. 把字符串 pk hash 成 Long（`hash(col) & Long.MaxValue`）
 2. 不传 `pk`，让 spark-ann 用顺序行号；查询结果是 parquet 行号，需要你自己反查 parquet 取业务 id
