@@ -9,8 +9,8 @@ A distributed Approximate Nearest Neighbor (ANN) index system built on Apache Sp
 Spark ANN provides scalable vector search with:
 - **Hierarchical HNSW Indexing**: Local indexes + global routing for distributed search
 - **DataFrame API**: Native Spark integration with implicit extensions
-- **REST API Server**: Production-ready HTTP endpoints for index management and search
-- **Web UI**: React-based dashboard for index management and search operations
+- **REST API Server**: Production-ready HTTP endpoints for bundle management and search
+- **Web UI**: React-based dashboard for bundle management and search operations
 - **Docker Support**: Ready-to-use containerized deployment
 - **File-Based Building**: Efficiently handles large datasets across distributed file systems
 
@@ -56,11 +56,22 @@ Spark ANN provides scalable vector search with:
 
 ## Quick Start
 
-### Building an Index
+### The shortest path
+
+The current product flow is:
+
+1. Build a bundle offline with Spark
+2. Load that bundle into `api-server`
+3. Query the bundle via REST or the Web UI
+
+For the full walkthrough, see [`docs/GETSTART.md`](docs/GETSTART.md).
+
+### 1) Build a bundle offline
 
 ```scala
-import com.wayblink.ann.spark.api._
-import com.wayblink.ann.spark.api.ANNDataFrameExtensions._
+import org.apache.spark.sql.SparkSession
+import com.wayblink.ann.bundle.ANNIndexConfig
+import com.wayblink.ann.spark.api.ANNIndexAPI
 
 val spark = SparkSession.builder()
   .appName("ANN Quick Start")
@@ -69,54 +80,47 @@ val spark = SparkSession.builder()
 
 import spark.implicits._
 
-// Create sample data
 val vectors = Seq(
   (1L, Seq(0.1f, 0.2f, 0.3f, 0.4f)),
   (2L, Seq(0.2f, 0.3f, 0.4f, 0.5f)),
   (3L, Seq(0.3f, 0.4f, 0.5f, 0.6f))
 ).toDF("id", "vector")
 
-// Build index using DataFrame extension
-val metadata = vectors.buildANNIndex(
+val metadata = ANNIndexAPI.buildIndex(
+  df = vectors,
   vectorColumn = "vector",
-  outputPath = "/tmp/ann_index"
+  outputPath = "/tmp/ann_bundle",
+  config = ANNIndexConfig(pk = Some("id"))
 )
-println(s"Built index with ${metadata.totalVectors} vectors")
+println(s"Built bundle with ${metadata.totalVectors} vectors")
 ```
 
-### Searching
+### 2) Load the bundle into api-server
 
-```scala
-// Single query search
-val queryVector = Array(0.15f, 0.25f, 0.35f, 0.45f)
-val results = vectors.annSearch(
-  indexPath = "/tmp/ann_index",
-  queryVector = queryVector,
-  k = 3
-)
-results.show()
-// +---+----------+--------+
-// | id|  distance| indexId|
-// +---+----------+--------+
-// |  1|     0.012| local_0|
-// |  2|     0.023| local_0|
-// |  3|     0.056| local_0|
-// +---+----------+--------+
-
-// Batch search
-val queriesDF = Seq(
-  (0, Seq(0.1f, 0.2f, 0.3f, 0.4f)),
-  (1, Seq(0.5f, 0.6f, 0.7f, 0.8f))
-).toDF("queryId", "vector")
-
-val batchResults = ANNIndexAPI.batchSearch(
-  spark = spark,
-  indexPath = "/tmp/ann_index",
-  queries = queriesDF,
-  queryVectorColumn = "vector",
-  k = 5
-)
+```bash
+curl -X POST http://localhost:8080/api/v1/indexes/bundle \
+  -H "Content-Type: application/json" \
+  -d '{
+    "indexId": "demo",
+    "bundlePath": "/tmp/ann_bundle"
+  }'
 ```
+
+### 3) Query the bundle
+
+```bash
+curl -X POST http://localhost:8080/api/v1/indexes/demo/search \
+  -H "Content-Type: application/json" \
+  -d '{"vector": [0.15, 0.25, 0.35, 0.45], "k": 3}'
+```
+
+### 4) Inspect loaded bundles
+
+```bash
+curl http://localhost:8080/api/v1/indexes
+```
+
+---
 
 ## Project Structure
 
@@ -182,7 +186,7 @@ sbt sparkIntegration/test   # Spark integration only
 sbt package
 ```
 
-This creates:
+This produces:
 ```
 core/target/scala-2.12/spark-ann-core_2.12-0.1.0-SNAPSHOT.jar
 spark-integration/target/scala-2.12/spark-ann-integration_2.12-0.1.0-SNAPSHOT.jar
@@ -202,9 +206,9 @@ sbt apiServer/assembly
 # Output: api-server/target/scala-2.12/spark-ann-api-server-assembly.jar
 ```
 
-## Using with Spark
+## Using Spark to Build Bundles
 
-### spark-shell
+### spark-shell: build a bundle
 
 ```bash
 # Using fat JAR (recommended)
@@ -225,15 +229,15 @@ val vectors = Seq(
   (2L, Seq(0.2f, 0.3f, 0.4f, 0.5f))
 ).toDF("id", "vector")
 
-// Build index
+// Build bundle
 val metadata = vectors.buildANNIndex("vector", "/tmp/ann_index")
 
-// Search
+// Search the bundle
 val results = vectors.annSearch("/tmp/ann_index", Array(0.15f, 0.25f, 0.35f, 0.45f), k = 2)
 results.show()
 ```
 
-### spark-submit
+### spark-submit: build a bundle at scale
 
 ```bash
 # Using fat JAR
@@ -268,11 +272,11 @@ libraryDependencies ++= Seq(
 )
 ```
 
-## DataFrame API Reference
+## Spark DataFrame API Reference
 
 ### Implicit Extensions
 
-Import to add ANN methods directly to DataFrames:
+Import to add bundle-building / bundle-search methods directly to DataFrames:
 
 ```scala
 import com.wayblink.ann.spark.api.ANNDataFrameExtensions._
@@ -284,7 +288,7 @@ df.annBatchSearch(indexPath, queries, queryVectorColumn, k)
 
 ### Static API
 
-Use `ANNIndexAPI` for explicit operations:
+Use `ANNIndexAPI` for explicit bundle operations:
 
 ```scala
 import com.wayblink.ann.spark.api.ANNIndexAPI
@@ -336,7 +340,7 @@ val dataFiles = FileDiscovery.discoverDataFiles(spark, "/data/vectors", "vector"
 // Group files (merge small files to ~500K vectors each)
 val fileGroups = FileGroupingStrategy.groupFiles(dataFiles, MergeSmall, 500000)
 
-// Build index from file groups
+// Build bundle from file groups
 val metadata = ANNIndexAPI.buildIndexFromFileGroups(
   spark = spark,
   fileGroups = fileGroups,
@@ -407,12 +411,7 @@ configuration reference.
 
 ## REST API Server
 
-> **Pattern-B online serving** is now supported: the api-server can
-> load bundle directories produced by the offline Spark builder
-> directly, no Spark needed at serve time. The on-disk contract is
-> documented in [`docs/BUNDLE_SPEC.md`](docs/BUNDLE_SPEC.md).
-> Section [Online Serving (Pattern B)](#online-serving-pattern-b)
-> below has a runnable walkthrough.
+> **Pattern-B online serving** is the supported server mode: the api-server loads bundle directories produced by the offline Spark builder, with no Spark dependency at serve time. The on-disk contract is documented in [`docs/BUNDLE_SPEC.md`](docs/BUNDLE_SPEC.md).
 
 ### Starting the Server
 
@@ -435,7 +434,7 @@ The server starts at `http://localhost:8080` by default.
 |---------------------|-------------|---------|
 | `ANN_SERVER_HOST` | Bind host | `0.0.0.0` |
 | `ANN_SERVER_PORT` | Bind port | `8080` |
-| `ANN_INDEX_PATH` | Index file base path | `/data/indexes` |
+| `ANN_INDEX_PATH` | Bundle base path | `/data/indexes` |
 
 ### API Endpoints
 
@@ -470,7 +469,7 @@ The server starts at `http://localhost:8080` by default.
 # Health check
 curl http://localhost:8080/api/v1/health
 
-# Create an index
+## Bundle workflow
 curl -X POST http://localhost:8080/api/v1/indexes/bundle \
   -H "Content-Type: application/json" \
   -d '{
@@ -478,7 +477,7 @@ curl -X POST http://localhost:8080/api/v1/indexes/bundle \
     "bundlePath": "/data/bundles/products-2026-05-14"
   }'
 
-# Search for nearest neighbors
+# Search the bundle for nearest neighbors
 curl -X POST http://localhost:8080/api/v1/indexes/products/search \
   -H "Content-Type: application/json" \
   -d '{"vector": [0.15, 0.25, 0.35, 0.45], "k": 5, "ef": 100}'
@@ -497,9 +496,7 @@ curl -X POST http://localhost:8080/api/v1/search/batch \
 
 ### Online Serving (Pattern B)
 
-The api-server can serve bundles produced by the offline Spark builder
-without re-importing or re-indexing data. This is the "pattern B"
-deployment shape: shared on-disk contract, independent runtimes.
+The api-server serves bundles produced by the offline Spark builder without re-importing or re-indexing data. This is the "pattern B" deployment shape: shared on-disk contract, independent runtimes.
 
 **Step 1 — build a bundle offline:**
 
@@ -529,9 +526,7 @@ curl -X POST http://localhost:8080/api/v1/indexes/bundle \
   }'
 ```
 
-The server eagerly loads every local HNSW + the global routing index,
-exposes the bundle as the only supported server-side index model, and
-becomes ready for queries.
+The server eagerly loads every local HNSW + the global routing index, exposes the bundle as the only supported server-side index model, and becomes ready for queries.
 
 **Step 3 — search through the bundle:**
 
@@ -621,7 +616,7 @@ docker run -d \
 
 ### Persistent Storage
 
-The `index-data` volume stores index files. Mount a host directory for persistence:
+The `index-data` volume stores bundle files. Mount a host directory for persistence:
 
 ```bash
 docker run -d \
@@ -631,12 +626,12 @@ docker run -d \
 
 ## Web UI
 
-A React-based web interface for managing indexes and performing searches.
+A React-based web interface for managing bundles and performing searches.
 
 ### Features
 
-- **Dashboard**: Overview of loaded indexes and system health
-- **Index Management**: Create, load, delete, and inspect indexes
+- **Dashboard**: Overview of loaded bundles and system health
+- **Bundle Management**: Load, delete, and inspect bundles
 - **Search Interface**: Single, multi-index, and batch search operations
 - **Theme Support**: Light and dark mode
 
@@ -682,7 +677,7 @@ The Swagger UI provides an interactive interface to explore and test all API end
 | Tag | Description |
 |-----|-------------|
 | Health | Service health and readiness endpoints |
-| Index | Index management operations (create, load, save, delete) |
+| Bundle | Bundle management operations |
 | Search | Vector search operations (single, multi-index, batch) |
 
 ## Benchmarks
@@ -749,15 +744,15 @@ SKIP_BENCHMARK=true sbt "core/test"
 - [x] Health & status endpoints
 - [x] Single/multi-index search
 - [x] Batch search
-- [x] Index management (create, load, unload, save)
+- [x] Bundle management (load, unload, inspect)
 - [x] OpenAPI/Swagger documentation
 - [ ] Prometheus metrics
 - [ ] API key authentication
 - [ ] TLS/HTTPS support
 
 ### Web UI (Complete)
-- [x] Dashboard with health stats and index overview
-- [x] Index management (create, load, delete, inspect)
+- [x] Dashboard with health stats and bundle overview
+- [x] Bundle management (load, delete, inspect)
 - [x] Single index search
 - [x] Multi-index search with result merging
 - [x] Batch search

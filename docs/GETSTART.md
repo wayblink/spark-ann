@@ -1,10 +1,8 @@
 # 入门指南 (Getting Started)
 
-> 本文档帮你 **10 分钟内** 完成第一次 spark-ann 体验：离线建一个向量索引、用 Spark 查询、把它部署成在线 HTTP 服务、用 curl 查询。
+> 本文档帮你在 **10 分钟内** 跑通当前主线：**Spark 构建 bundle → api-server 加载 bundle → REST 查询**。
 >
-> 已经熟悉概念？直接看 [`README.md`](../README.md) 的 "PySpark" 和 "Online Serving (Pattern B)" 章节，或读 [`BUNDLE_SPEC.md`](BUNDLE_SPEC.md) 了解 on-disk 契约。
-
----
+> 如果你只想先看最短路径，可以先读本页的第 1～4 节；如果你想看每个命令的背景和排错，继续往后看。
 
 ## 0. 准备 (Prerequisites)
 
@@ -73,7 +71,7 @@ api-server/target/scala-2.12/spark-ann-api-server-assembly.jar           # ~47M
 
 > 适合：用 Scala 后端、Spark Job、希望走 sbt 工具链的工程师。
 
-### 2.1 离线建索引
+### 2.1 离线构建 bundle
 
 最小例子（在 `spark-shell` 或者 sbt 项目里）：
 
