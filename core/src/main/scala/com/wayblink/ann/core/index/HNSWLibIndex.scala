@@ -2,9 +2,12 @@ package com.wayblink.ann.core.index
 
 import com.github.jelmerk.knn.{DistanceFunction, DistanceFunctions}
 import com.github.jelmerk.knn.hnsw.HnswIndex
+import org.json4s._
+import org.json4s.jackson.Serialization
 
-import java.io.{File, ObjectInputStream, ObjectOutputStream}
+import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths}
+import java.util.concurrent.atomic.AtomicLong
 import scala.collection.JavaConverters._
 
 /**
@@ -23,6 +26,11 @@ class HNSWLibIndex private (
 
   @transient private var index: HnswIndex[Long, Array[Float], VectorItem, java.lang.Float] =
     createIndex(config)
+
+  // Per-instance monotonic counter passed to hnswlib's optimistic-concurrency
+  // remove API. Was previously a shared companion-object var, which corrupted
+  // tombstone tracking across concurrent indices.
+  @transient private val removeVersion: AtomicLong = new AtomicLong(0L)
 
   private def createIndex(cfg: HNSWConfig): HnswIndex[Long, Array[Float], VectorItem, java.lang.Float] = {
     val distanceFunction: DistanceFunction[Array[Float], java.lang.Float] = distanceType match {
@@ -66,11 +74,16 @@ class HNSWLibIndex private (
       return Seq.empty
     }
 
-    // Set search ef parameter (controls accuracy vs. speed tradeoff)
-    index.setEf(ef)
-
     val actualK = math.min(k, size)
-    val results = index.findNearest(query, actualK)
+
+    // hnswlib's `ef` is mutable state on the index object; setting it from one
+    // thread while another concurrent search reads it produces interleaved /
+    // wrong-accuracy results. Serialize the setEf + findNearest pair per index.
+    // Different indices remain independent (lock is on the underlying HnswIndex).
+    val results = index.synchronized {
+      index.setEf(ef)
+      index.findNearest(query, actualK)
+    }
 
     results.asScala.map { result =>
       SearchResult(
@@ -87,33 +100,21 @@ class HNSWLibIndex private (
     // Save the index
     index.save(indexPath)
 
-    // Save metadata separately
+    // Save metadata as JSON sidecar (was Java ObjectStream — see BUNDLE_SPEC §5).
     val metadataPath = Paths.get(path + ".meta")
     val metadata = IndexMetadata(dim, distanceType, size)
-    val oos = new ObjectOutputStream(Files.newOutputStream(metadataPath))
-    try {
-      oos.writeObject(metadata)
-    } finally {
-      oos.close()
-    }
+    HNSWLibIndex.writeMetadata(metadata, metadataPath)
   }
 
   override def load(path: String): Unit = {
     val indexPath = Paths.get(path)
     val metadataPath = Paths.get(path + ".meta")
 
-    // Load metadata first
-    val ois = new ObjectInputStream(Files.newInputStream(metadataPath))
-    val metadata = try {
-      ois.readObject().asInstanceOf[IndexMetadata]
-    } finally {
-      ois.close()
-    }
+    val metadata = HNSWLibIndex.readMetadata(metadataPath)
 
     require(metadata.dimension == dim,
       s"Loaded index dimension ${metadata.dimension} doesn't match expected dimension $dim")
 
-    // Load the index
     index = HnswIndex.load(indexPath)
   }
 
@@ -129,7 +130,7 @@ class HNSWLibIndex private (
    * Remove an item from the index by ID.
    */
   def remove(id: Long): Boolean = {
-    index.remove(id, HNSWLibIndex.version)
+    index.remove(id, removeVersion.incrementAndGet())
   }
 
   /**
@@ -141,7 +142,10 @@ class HNSWLibIndex private (
 }
 
 /**
- * Metadata for serialized indices.
+ * Metadata for serialized indices. Persisted as a JSON envelope; the
+ * `@SerialVersionUID` is retained only because the case class extends
+ * `Serializable` for compatibility with Spark closure capture, not for
+ * on-disk persistence.
  */
 @SerialVersionUID(1L)
 case class IndexMetadata(
@@ -152,8 +156,35 @@ case class IndexMetadata(
 
 object HNSWLibIndex {
 
-  // Version counter for remove operations
-  private var version: Int = 0
+  /** Version of the JSON sidecar envelope written by save() / accepted by load(). */
+  val MetaSidecarVersion: Int = 1
+  val MetaSidecarType: String = "HNSWLibIndexMetadata"
+
+  private implicit val jsonFormats: Formats = Serialization.formats(NoTypeHints)
+
+  private case class MetaEnvelope(version: Int, `type`: String, payload: IndexMetadata)
+
+  private def writeMetadata(metadata: IndexMetadata, target: Path): Unit = {
+    val envelope = MetaEnvelope(MetaSidecarVersion, MetaSidecarType, metadata)
+    val json = Serialization.writePretty(envelope)
+    Files.write(target, json.getBytes(StandardCharsets.UTF_8))
+  }
+
+  private def readMetadata(source: Path): IndexMetadata = {
+    val text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8)
+    val envelope = Serialization.read[MetaEnvelope](text)
+    if (envelope.version > MetaSidecarVersion) {
+      throw new IllegalStateException(
+        s"Metadata sidecar version ${envelope.version} is newer than supported $MetaSidecarVersion at $source"
+      )
+    }
+    if (envelope.`type` != MetaSidecarType) {
+      throw new IllegalStateException(
+        s"Metadata sidecar type mismatch at $source: expected $MetaSidecarType, found ${envelope.`type`}"
+      )
+    }
+    envelope.payload
+  }
 
   /**
    * Create a new empty HNSWLibIndex with default configuration.
@@ -185,16 +216,8 @@ object HNSWLibIndex {
    */
   def load(path: String): HNSWLibIndex = {
     val metadataPath = Paths.get(path + ".meta")
+    val metadata = readMetadata(metadataPath)
 
-    // Load metadata first to get dimension
-    val ois = new ObjectInputStream(Files.newInputStream(metadataPath))
-    val metadata = try {
-      ois.readObject().asInstanceOf[IndexMetadata]
-    } finally {
-      ois.close()
-    }
-
-    // Create index with correct dimension and load data
     val index = new HNSWLibIndex(metadata.dimension, HNSWConfig(), metadata.distanceType)
     index.index = HnswIndex.load(Paths.get(path))
     index

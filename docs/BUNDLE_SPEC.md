@@ -161,8 +161,12 @@ Readers MUST load the payload into an `Array[String]` indexed by
 The `.hnsw` files in a bundle use the binary format produced by
 [`com.github.jelmerk:hnswlib-core`][jelmerk-hnswlib] version 1.1.0.
 Each `.hnsw` file is a directory containing a hnswlib-managed binary
-plus an `.hnsw.meta` sidecar (a Java `ObjectStream`-serialised
-`IndexMetadata` value: dimension, distanceType, vectorCount).
+plus an `.hnsw.meta` sidecar — a UTF-8 JSON envelope of the form
+`{"version":1,"type":"HNSWLibIndexMetadata","payload":{"dimension":N,
+"distanceType":"euclidean|cosine","vectorCount":N}}`. Readers MUST
+reject envelopes whose `version` exceeds the supported version and
+MUST reject mismatched `type`. (Earlier drafts of this spec used a
+Java `ObjectStream` payload; that format is no longer accepted.)
 
 > ⚠️ **WARNING — Cross-language compatibility**
 >

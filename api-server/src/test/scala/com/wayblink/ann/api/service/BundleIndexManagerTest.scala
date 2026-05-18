@@ -70,4 +70,21 @@ class BundleIndexManagerTest extends AnyFunSuite with Matchers {
     val mgr = IndexManager()
     mgr.getBundle("missing") shouldBe None
   }
+
+  test("loadBundle returns CapacityExceeded once max-loaded-indexes is reached") {
+    val mgr = IndexManager(maxLoadedIndexes = 1)
+    val root = BundleIndexManagerTestHelper.writeBundle()
+    mgr.loadBundle("first", root.toString).isRight shouldBe true
+
+    val secondRoot = BundleIndexManagerTestHelper.writeBundle()
+    val rejected = mgr.loadBundle("second", secondRoot.toString)
+    rejected.isLeft shouldBe true
+    val err = rejected.left.get.asInstanceOf[ApiError.CapacityExceeded]
+    err.loaded shouldBe 1
+    err.max shouldBe 1
+
+    // After unloading, capacity is freed.
+    mgr.unloadIndex("first") shouldBe true
+    mgr.loadBundle("second", secondRoot.toString).isRight shouldBe true
+  }
 }

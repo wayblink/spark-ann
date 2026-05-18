@@ -64,6 +64,13 @@ object ApiError {
     val message = s"Index '$id' already exists"
   }
 
+  /** Server has reached its configured maximum number of loaded bundles. */
+  final case class CapacityExceeded(loaded: Int, max: Int) extends ApiError {
+    val code = "capacity_exceeded"
+    val message =
+      s"Server already holds $loaded loaded indexes (max=$max); unload one before loading another"
+  }
+
   /** Underlying search call raised an exception. */
   final case class SearchFailed(detail: String) extends ApiError {
     val code = "search_failed"
@@ -89,6 +96,7 @@ object ApiError {
     case _: InvalidRequest     => StatusCodes.BadRequest
     case NoIndexesAvailable    => StatusCodes.BadRequest
     case _: IndexAlreadyExists => StatusCodes.Conflict
+    case _: CapacityExceeded   => StatusCodes.ServiceUnavailable
     case _: SearchFailed       => StatusCodes.InternalServerError
     case _: InternalFailure    => StatusCodes.InternalServerError
   }

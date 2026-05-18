@@ -29,14 +29,24 @@ case class LoadedBundleInfo(
 
 /**
  * Bundle-only manager for in-memory indexes.
+ *
+ * @param maxLoadedIndexes Hard cap on concurrently loaded bundles. Once
+ *   reached, further loadBundle calls return [[ApiError.CapacityExceeded]]
+ *   until something is unloaded. Wired from `ann-service.index.max-loaded-indexes`
+ *   in application.conf.
  */
-class IndexManager {
+class IndexManager(val maxLoadedIndexes: Int) {
+
+  require(maxLoadedIndexes > 0, s"maxLoadedIndexes must be positive, got $maxLoadedIndexes")
 
   private val bundleIndexes = new ConcurrentHashMap[String, LoadedBundleInfo]()
 
   def loadBundle(indexId: String, bundlePath: String): Either[ApiError, LoadedBundleInfo] = {
     if (bundleIndexes.containsKey(indexId)) {
       return Left(ApiError.IndexAlreadyExists(indexId))
+    }
+    if (bundleIndexes.size() >= maxLoadedIndexes) {
+      return Left(ApiError.CapacityExceeded(bundleIndexes.size(), maxLoadedIndexes))
     }
     val path = Paths.get(bundlePath)
     if (!BundleReader.isBundle(path)) {
@@ -64,9 +74,16 @@ class IndexManager {
             globalIndex  = global,
             boundaryMap  = mapping
           )
-          val existing = bundleIndexes.putIfAbsent(indexId, info)
-          if (existing != null) Left(ApiError.IndexAlreadyExists(indexId))
-          else Right(info)
+          // Re-check capacity under the atomic put. Two concurrent callers
+          // could both have passed the early check above; only one wins the
+          // race for the last slot.
+          if (bundleIndexes.size() >= maxLoadedIndexes) {
+            Left(ApiError.CapacityExceeded(bundleIndexes.size(), maxLoadedIndexes))
+          } else {
+            val existing = bundleIndexes.putIfAbsent(indexId, info)
+            if (existing != null) Left(ApiError.IndexAlreadyExists(indexId))
+            else Right(info)
+          }
         } catch {
           case e: Exception =>
             Left(ApiError.InternalFailure(s"Failed to load bundle: ${e.getMessage}"))
@@ -90,5 +107,10 @@ class IndexManager {
 }
 
 object IndexManager {
-  def apply(): IndexManager = new IndexManager()
+  /** Fallback when no config value is supplied. Matches application.conf. */
+  val DefaultMaxLoadedIndexes: Int = 10
+
+  def apply(): IndexManager = new IndexManager(DefaultMaxLoadedIndexes)
+
+  def apply(maxLoadedIndexes: Int): IndexManager = new IndexManager(maxLoadedIndexes)
 }

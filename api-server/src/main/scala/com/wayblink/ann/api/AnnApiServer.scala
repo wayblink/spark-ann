@@ -23,13 +23,14 @@ object AnnApiServer extends App {
   private val host = serverConfig.getString("host")
   private val port = serverConfig.getInt("port")
   private val version = config.getString("ann-service.version")
+  private val maxLoadedIndexes = config.getInt("ann-service.index.max-loaded-indexes")
 
   // Create actor system
   implicit val system: ActorSystem[Nothing] = ActorSystem(Behaviors.empty, "ann-api-server")
   implicit val executionContext: ExecutionContext = system.executionContext
 
   // Initialize services
-  private val indexManager = IndexManager()
+  private val indexManager = IndexManager(maxLoadedIndexes)
   private val searchService = SearchService(indexManager)
 
   // Create routes
@@ -92,7 +93,9 @@ class AnnApiServer(
     implicit val sys: ActorSystem[Nothing] = system
     implicit val ec: ExecutionContext = system.executionContext
 
-    _indexManager = IndexManager()
+    val cfg = ConfigFactory.load()
+    val maxLoadedIndexes = cfg.getInt("ann-service.index.max-loaded-indexes")
+    _indexManager = IndexManager(maxLoadedIndexes)
     _searchService = SearchService(_indexManager)
 
     val apiRoutes = ApiRoutes(_indexManager, _searchService, version)
